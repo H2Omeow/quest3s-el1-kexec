@@ -19,6 +19,7 @@
 #include <linux/atomic.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
+#include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/remoteproc.h>
 #include <linux/string.h>

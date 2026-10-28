@@ -525,9 +525,9 @@ void quest_platform_report(struct quest_report *r)
 			driver_find(quest_report_drivers[i], &platform_bus_type);
 		unsigned int bound = 0;
 
-		if (driver)
-			driver_for_each_device(driver, NULL, &bound,
-					       quest_count_bound);
+		if (driver &&
+		    driver_for_each_device(driver, NULL, &bound, quest_count_bound))
+			bound = 0;
 		quest_report_add(r, "driver %s present=%d bound=%u\n",
 				 quest_report_drivers[i], !!driver, bound);
 	}
