@@ -78,7 +78,9 @@ jobs:
           echo "== differences against the device configuration =="
           diff <(grep '^CONFIG_' "$GITHUB_WORKSPACE/$DEVICE_CONFIG" | sort) \
                <(grep '^CONFIG_' out/.config | sort) | tee config.diff || true
-          if grep -E '^[<>]' config.diff | grep -vE 'CONFIG_(LOCALVERSION|LOCALVERSION_AUTO|DEBUG_INFO[A-Z0-9_]*|PAHOLE_HAS[A-Z_]*)='; then
+          # CC_CAN_LINK* are host-capability probes that /proc/config.gz of the
+          # device does not carry; LOCALVERSION/DEBUG_INFO* are pinned above.
+          if grep -E '^[<>]' config.diff | grep -vE 'CONFIG_(LOCALVERSION|LOCALVERSION_AUTO|DEBUG_INFO[A-Z0-9_]*|PAHOLE_HAS[A-Z_]*|CC_CAN_LINK[A-Z_]*)='; then
             echo "olddefconfig changed configuration beyond the pinned version/debug keys" >&2
             exit 1
           fi
