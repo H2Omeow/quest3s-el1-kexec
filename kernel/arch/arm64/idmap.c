@@ -79,3 +79,29 @@ void quest_idmap_install(phys_addr_t code_page)
 	/* Uses the real stock init_mm, whose reserved ASID is zero. */
 	quest_switch_mm(virt_to_phys(quest_idmap_root));
 }
+
+void quest_idmap_save(struct quest_mmu_state *s)
+{
+	s->ttbr0 = read_sysreg(ttbr0_el1);
+	s->ttbr1 = read_sysreg(ttbr1_el1);
+	s->tcr = read_sysreg(tcr_el1);
+}
+
+/*
+ * cpu_do_switch_mm() also rewrote the ASID field of TTBR1 (TCR.A1 selects
+ * TTBR1's ASID). Restore TCR, TTBR1 and TTBR0 exactly, passing through the
+ * empty root so no walk ever uses a mismatched T0SZ/root pair.
+ */
+void quest_idmap_restore(const struct quest_mmu_state *s)
+{
+	write_sysreg(phys_to_ttbr(virt_to_phys(quest_empty_root)), ttbr0_el1);
+	isb();
+	local_flush_tlb_all();
+	write_sysreg(s->tcr, tcr_el1);
+	isb();
+	write_sysreg(s->ttbr1, ttbr1_el1);
+	isb();
+	write_sysreg(s->ttbr0, ttbr0_el1);
+	isb();
+	local_flush_tlb_all();
+}

@@ -8,9 +8,9 @@
 
 目前记录的设备版本是 `5.10.240-g9cb2f620a9a8`。公开源码快照和手工候选配置没有设备的完整 `.config`、`Module.symvers`、工具链版本及最终 ABI 资料。因此本机产物只是候选编译检查，不能拿来声称可以在头显加载。需要取得与该设备固件准确匹配的原厂构建输出，特别是开启 `CONFIG_MODVERSIONS` 时所需的 `Module.symvers`。
 
-切换会停掉当前内核且没有回退路径。目标 Image、DTB、可选 initrd、启动参数和物理内存区间必须先准确确认。内核模块会检查物理资源树、FDT reserve map、`/reserved-memory` 的 `reg` 项及已解析的动态保留区，并拒绝与映像或 DTB 映射块冲突的目标地址。用户态规划器要求显式传入 RAM 和保留区；当前 CLI 无法从 `size` 属性还原动态保留区的实际分配，因此目标 DTB 中含有 `size` 而没有 `reg` 的保留区时仍会拒绝规划。不要猜测地址，也不要把构建主机或其他 Quest 型号的数据当作本机数据。
+切换会停掉当前内核且没有回退路径。目标 Image、DTB、可选 initrd、启动参数和物理内存区间必须先准确确认。内核模块会检查物理资源树、FDT reserve map、`/reserved-memory` 的 `reg` 项及已解析的动态保留区，并拒绝与映像或 DTB 映射块冲突的目标地址。用户态规划器可从 `/proc/iomem` 读取 RAM（`--iomem`），并用模块报告（`--report`）把目标 DTB 中只有 `size` 的动态保留区固定到当前内核的实际地址、把已移交安全 VM 的页加为 `no-map` 节点；没有报告时，含 `size` 而无 `reg` 的保留区仍会拒绝规划。规划器检查的是改写后、目标内核实际收到的 DTB。不要猜测地址，也不要把构建主机或其他 Quest 型号的数据当作本机数据。
 
-执行阶段先串行化系统转换并冻结用户进程，再获取已暂存映像锁、检查 EL1 架构条件、阻断设备 probing，并在阻断后重新检查目标内存。平台预检成功后才进入不可返回的关机阶段。Quest 的 SCM warm shutdown 会保留运行中的 SCM/PMIC 固件状态；watchdog shutdown 会尝试停用 secure watchdog、pet timer 和 app watchdog，并验证 app watchdog 已禁用。若发现已绑定的 `shared_memory_bridge`、`qseecom` 或 `smcinvoke` 驱动，模块会拒绝切换。TEE 句柄所有权转移协议，以及 SCM WAITQ / in-flight 调用排空均未实现；源码分析与限制见 [TEE_HANDOFF.md](TEE_HANDOFF.md)。
+执行阶段先串行化系统转换并冻结用户进程，再获取已暂存映像锁、检查 EL1 架构条件、阻断设备 probing，并在阻断后重新检查目标内存。平台预检成功后才进入不可返回的关机阶段。Quest 的 SCM warm shutdown 会保留运行中的 SCM/PMIC 固件状态；watchdog shutdown 会尝试停用 secure watchdog、pet timer 和 app watchdog，并验证 app watchdog 已禁用。watchdog 同时支持 MMIO 的 `msm_watchdog` 和 Gunyah 的 `gh-watchdog`（hypervisor SMC 停用并读回状态）；DT 中任何可用 watchdog 节点若没有被这两种受支持驱动绑定，预检 fail closed。模块参数 `stop_remoteprocs=pas` 会在冻结后停止 q6v5_pas 远程处理器（该驱动没有 shutdown 回调），失败或回滚时重启。若发现已绑定的 `shared_memory_bridge`、`qseecom` 或 `smcinvoke` 驱动，模块默认拒绝切换；`allow_tee=1` 改为只告警，此时目标 DTB 应禁用 qseecom 节点。TEE 句柄所有权转移协议，以及 SCM WAITQ / in-flight 调用排空均未实现；源码分析与限制见 [TEE_HANDOFF.md](TEE_HANDOFF.md)。
 
 ## 构建
 
@@ -48,6 +48,16 @@ scripts/prepare-image.py /path/to/target-vmlinux build/artifacts/Image.el1
 本仓库不分发目标内核或原厂构建输出；主机端验证及其限制见 [VALIDATION.md](VALIDATION.md)。可复现的合成 planner 输入见 [tests/fixtures/synthetic-plan](tests/fixtures/synthetic-plan/README.md)。
 
 ## 使用
+
+设备上的验证顺序（只读采集 → 可逆演练 → 计划与完整复制演练 → 最小目标 EXEC）见 [DEVICE_LADDER.md](DEVICE_LADDER.md)。新增命令：
+
+```sh
+cat /dev/quest_el1                     # 只读预检报告（等同 quest-el1 report）
+quest-el1 dump-dt live.dtb             # 从 /proc/device-tree 生成运行时 DTB
+quest-el1 rehearse --steps watchdog,cpus,mmu   # 可逆演练；copy 需要先 load
+quest-el1 plan ... --report report.txt --iomem iomem.txt --nomap S:Z --disable /dt/path
+```
+
 
 `plan` 只在主机上验证并显示装载计划，不访问设备。`load` 将映像暂存到模块；它不会切换。`exec` 才会停止当前系统并跳入新内核，需显式写 `--yes`。实际的 `--ram`、`--reserve`、kernel、DTB 和 initrd 地址必须来自目标设备的真实启动布局：
 

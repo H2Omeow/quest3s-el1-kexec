@@ -36,6 +36,8 @@
 
 #include "kexec_compat.h"
 #include "platform_quest.h"
+#include "platform_wdt.h"
+#include "report.h"
 
 #define QUEST_WDT_ENABLE_OFFSET 0x08
 #define QUEST_WDT_LAST_OFFSET   0x14
@@ -51,7 +53,19 @@ struct quest_platform_binding {
 };
 
 static DEFINE_MUTEX(quest_platform_lock);
-static struct quest_platform_binding scm_binding, wdt_binding;
+static struct quest_platform_binding scm_binding, wdt_binding, gh_binding;
+
+/*
+ * 0 (default): refuse while QTEE/QSEE/smcinvoke drivers are bound, as before.
+ * 1: proceed; the operator takes responsibility for stopping TEE clients and
+ *    for disabling those nodes in the target DTB (quest-el1 --disable). The
+ *    Quest Pro port showed that a target kernel which re-probes qseecom with
+ *    stale TZ listener registrations hangs, while one with the node disabled
+ *    boots; the secure world itself is never reset by either kernel.
+ */
+static bool allow_tee;
+module_param(allow_tee, bool, 0600);
+MODULE_PARM_DESC(allow_tee, "Allow handoff with bound TEE drivers (target DTB must disable them)");
 static bool prepared, self_pinned;
 static int shutdown_error;
 #if IS_ENABLED(CONFIG_QCOM_WDT_CORE)
@@ -59,6 +73,7 @@ static struct msm_watchdog_data *watchdog_data;
 static struct qcom_wdt_ops *watchdog_ops;
 static int (*watchdog_suspend)(struct device *);
 static int (*secure_watchdog_disable)(void);
+static struct msm_watchdog_data *gh_watchdog_data;
 #endif
 
 /* Account for the canonical function aliases emitted by Clang CFI. */
@@ -166,6 +181,11 @@ static int quest_reject_tee_driver(const char *name)
 		return ret;
 	if (!bound)
 		return 0;
+	if (READ_ONCE(allow_tee)) {
+		pr_warn("Bound %s allowed by allow_tee; target DTB must disable it\n",
+			name);
+		return 0;
+	}
 	pr_err("Bound %s has no supported secure-world ownership transfer protocol\n",
 	       name);
 	return -EOPNOTSUPP;
@@ -268,12 +288,64 @@ out:
 		pr_err("Unknown watchdog ABI/state or unavailable shutdown helper\n");
 	return ret;
 }
+
+static void quest_gh_watchdog_shutdown(struct platform_device *pdev)
+{
+	int ret;
+
+	if (&pdev->dev != gh_binding.dev ||
+	    pdev->dev.driver != &gh_binding.driver->driver ||
+	    dev_get_drvdata(&pdev->dev) != gh_watchdog_data) {
+		WRITE_ONCE(shutdown_error, -ENODEV);
+		return;
+	}
+	ret = quest_gh_wdt_disable(&pdev->dev, gh_watchdog_data);
+	if (ret) {
+		pr_emerg("Gunyah watchdog disable did not complete: %d; no handoff\n", ret);
+		WRITE_ONCE(shutdown_error, ret);
+		return;
+	}
+	WRITE_ONCE(gh_binding.shutdown_seen, true);
+	pr_info("Gunyah virtual watchdog disabled for EL1 handoff\n");
+}
+
+static int quest_check_gh_watchdog(void)
+{
+	struct device *dev = gh_binding.dev;
+	int ret;
+
+	if (!dev)
+		return 0;
+	device_lock(dev);
+	ret = dev->driver == &gh_binding.driver->driver ?
+		quest_gh_wdt_check(dev, &gh_watchdog_data) : -EOPNOTSUPP;
+	device_unlock(dev);
+	return ret;
+}
 #else
 static int quest_check_watchdog(void)
 {
 	return wdt_binding.dev ? -EOPNOTSUPP : 0;
 }
+
+static int quest_check_gh_watchdog(void)
+{
+	return gh_binding.dev ? -EOPNOTSUPP : 0;
+}
 #endif
+
+/* Every available watchdog DT node must belong to a binding handled above. */
+static int quest_check_watchdog_inventory(void)
+{
+	char why[160] = "";
+	int ret = quest_wdt_dt_check(wdt_binding.dev, gh_binding.dev, why,
+				     sizeof(why));
+
+	if (ret)
+		pr_err("Watchdog without supported shutdown: %s; refusing handoff\n",
+		       why);
+	return ret;
+}
 
 static void quest_release_binding(struct quest_platform_binding *binding,
 		void (*replacement)(struct platform_device *))
@@ -297,12 +369,15 @@ static void quest_release_binding(struct quest_platform_binding *binding,
 static void quest_cancel_locked(void)
 {
 #if IS_ENABLED(CONFIG_QCOM_WDT_CORE)
+	quest_release_binding(&gh_binding, quest_gh_watchdog_shutdown);
+	gh_watchdog_data = NULL;
 	quest_release_binding(&wdt_binding, quest_watchdog_shutdown);
 	watchdog_data = NULL;
 	watchdog_ops = NULL;
 	watchdog_suspend = NULL;
 	secure_watchdog_disable = NULL;
 #else
+	quest_release_binding(&gh_binding, NULL);
 	quest_release_binding(&wdt_binding, NULL);
 #endif
 	quest_release_binding(&scm_binding, quest_scm_warm_shutdown);
@@ -374,6 +449,14 @@ int quest_platform_prepare(void)
 				"qcom_soc_match_table");
 	if (!ret)
 		ret = quest_check_watchdog();
+	if (!ret)
+		ret = quest_get_binding(&gh_binding, "gh-watchdog", "gh_wdt_driver",
+				"gh_wdt_probe", "qcom_wdt_remove", NULL,
+				"gh_wdt_match_table");
+	if (!ret)
+		ret = quest_check_gh_watchdog();
+	if (!ret)
+		ret = quest_check_watchdog_inventory();
 	mutex_unlock(stock_module_mutex);
 	if (ret)
 		goto cancel;
@@ -387,6 +470,8 @@ int quest_platform_prepare(void)
 #if IS_ENABLED(CONFIG_QCOM_WDT_CORE)
 	if (!ret)
 		ret = quest_install(&wdt_binding, quest_watchdog_shutdown);
+	if (!ret)
+		ret = quest_install(&gh_binding, quest_gh_watchdog_shutdown);
 #endif
 	if (ret)
 		goto cancel;
@@ -410,5 +495,148 @@ bool quest_platform_shutdown_ok(void)
 {
 	return READ_ONCE(prepared) && !READ_ONCE(shutdown_error) &&
 		(!scm_binding.dev || READ_ONCE(scm_binding.shutdown_seen)) &&
-		(!wdt_binding.dev || READ_ONCE(wdt_binding.shutdown_seen));
+		(!wdt_binding.dev || READ_ONCE(wdt_binding.shutdown_seen)) &&
+		(!gh_binding.dev || READ_ONCE(gh_binding.shutdown_seen));
+}
+
+static const char *const quest_report_drivers[] = {
+	"qcom_scm", "msm_watchdog", "gh-watchdog",
+	"shared_memory_bridge", "qseecom", "smcinvoke", "qcom_q6v5_pas",
+};
+
+static int quest_count_bound(struct device *dev, void *data)
+{
+	(*(unsigned int *)data)++;
+	return 0;
+}
+
+/* Read-only: driver presence and bound-device counts for the report. */
+void quest_platform_report(struct quest_report *r)
+{
+	struct mutex *stock_module_mutex = (void *)quest_lookup_name("module_mutex");
+	unsigned int i;
+
+	quest_report_add(r, "allow_tee %d\n", READ_ONCE(allow_tee));
+	if (!stock_module_mutex)
+		return;
+	mutex_lock(stock_module_mutex);
+	for (i = 0; i < ARRAY_SIZE(quest_report_drivers); i++) {
+		struct device_driver *driver =
+			driver_find(quest_report_drivers[i], &platform_bus_type);
+		unsigned int bound = 0;
+
+		if (driver &&
+		    driver_for_each_device(driver, NULL, &bound, quest_count_bound))
+			bound = 0;
+		quest_report_add(r, "driver %s present=%d bound=%u\n",
+				 quest_report_drivers[i], !!driver, bound);
+	}
+	mutex_unlock(stock_module_mutex);
+}
+
+#if IS_ENABLED(CONFIG_QCOM_WDT_CORE)
+/* MMIO watchdog: same steps as the shutdown callback minus the secure part. */
+static int __nocfi quest_rehearse_msm_watchdog(void)
+{
+	struct msm_watchdog_data *wd = watchdog_data;
+	int (*pet_resume)(struct device *) =
+		(void *)quest_lookup_name("qcom_wdt_pet_resume");
+	struct device *dev = wdt_binding.dev;
+	int ret = 0, ret2;
+
+	if (wd->watchdog_task && !pet_resume)
+		return -ENOENT;
+	if (wd->watchdog_task) {
+		mutex_lock(&wd->disable_lock);
+		ret = watchdog_suspend(dev);
+	}
+	if (!ret)
+		ret = wd->ops->disable_wdt(wd);
+	if (!ret && readl(wd->base + QUEST_WDT_ENABLE_OFFSET))
+		ret = -EIO;
+	pr_info("rehearsal: msm watchdog disable %d\n", ret);
+	if (wd->watchdog_task) {
+		ret2 = pet_resume(dev);
+		mutex_unlock(&wd->disable_lock);
+		if (!ret)
+			ret = ret2;
+	} else {
+		ret2 = wd->ops->enable_wdt(1, wd);
+		if (!ret)
+			ret = ret2;
+	}
+	return ret;
+}
+
+static int quest_rehearse_gh_watchdog(void)
+{
+	struct device *dev = gh_binding.dev;
+	u32 enabled = 1;
+	int ret, ret2;
+
+	ret = quest_gh_wdt_disable(dev, gh_watchdog_data);
+	if (!ret)
+		ret = quest_gh_wdt_status(&enabled, NULL, NULL);
+	if (!ret && enabled)
+		ret = -EIO;
+	pr_info("rehearsal: gh watchdog disable %d (enabled=%u)\n", ret, enabled);
+	ret2 = quest_gh_wdt_resume(dev, gh_watchdog_data);
+	return ret ? ret : ret2;
+}
+#endif
+
+/*
+ * Reversible watchdog test: run the same inventory as prepare(), then stop
+ * and restart every watchdog the handoff would stop. Nothing is installed.
+ * Does not touch the secure watchdog (its deactivation has no inverse).
+ */
+int quest_platform_rehearse_watchdog(unsigned int *stopped)
+{
+	struct mutex *stock_module_mutex;
+	int ret;
+
+	*stopped = 0;
+	mutex_lock(&quest_platform_lock);
+	if (prepared) {
+		ret = -EBUSY;
+		goto out;
+	}
+	stock_module_mutex = (void *)quest_lookup_name("module_mutex");
+	if (!stock_module_mutex) {
+		ret = -ENOENT;
+		goto out;
+	}
+	mutex_lock(stock_module_mutex);
+	ret = quest_get_binding(&scm_binding, "qcom_scm", "qcom_scm_driver",
+			"qcom_scm_probe", NULL, "qcom_scm_shutdown",
+			"qcom_scm_dt_match");
+	if (!ret)
+		ret = quest_get_binding(&wdt_binding, "msm_watchdog", "qcom_soc_wdt_driver",
+				"qcom_soc_wdt_probe", "qcom_wdt_remove", NULL,
+				"qcom_soc_match_table");
+	if (!ret)
+		ret = quest_check_watchdog();
+	if (!ret)
+		ret = quest_get_binding(&gh_binding, "gh-watchdog", "gh_wdt_driver",
+				"gh_wdt_probe", "qcom_wdt_remove", NULL,
+				"gh_wdt_match_table");
+	if (!ret)
+		ret = quest_check_gh_watchdog();
+	if (!ret)
+		ret = quest_check_watchdog_inventory();
+	mutex_unlock(stock_module_mutex);
+#if IS_ENABLED(CONFIG_QCOM_WDT_CORE)
+	if (!ret && wdt_binding.dev) {
+		ret = quest_rehearse_msm_watchdog();
+		(*stopped)++;
+	}
+	if (!ret && gh_binding.dev) {
+		ret = quest_rehearse_gh_watchdog();
+		(*stopped)++;
+	}
+#endif
+	quest_cancel_locked();
+out:
+	mutex_unlock(&quest_platform_lock);
+	return ret;
 }

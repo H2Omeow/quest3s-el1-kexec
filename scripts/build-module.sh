@@ -34,7 +34,7 @@ check_args=()
 if [[ $mode == check ]]; then
     # LTO's first .o is an archive of bitcode. Run the native link too, then
     # stop before .ko generation; missing stock symvers cannot validate imports.
-    check_args=(KBUILD_MODPOST_WARN=1 KBUILD_MODPOST_NOFINAL=1)
+    check_args=(-k KBUILD_MODPOST_WARN=1 KBUILD_MODPOST_NOFINAL=1)
     printf 'Candidate compile/native link only; no stock symbol/CRC validation or .ko generation.\n'
 fi
 exec make -C "$kdir" ARCH=arm64 LLVM="${LLVM:-1}" LLVM_IAS="${LLVM_IAS:-1}" \
