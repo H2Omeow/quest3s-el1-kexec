@@ -1,0 +1,98 @@
+name: Stock-tree module build
+
+# Compile the loader against the published Quest 3S stock source
+# (facebookincubator/oculus-linux-kernel 729ec6c, 5.10.240, anorak).
+# This proves that every header/struct/symbol the module touches exists with
+# the expected shape in the stock tree.  It does NOT validate the device CRCs
+# (no device Module.symvers), so the artifact is a candidate object only.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  STOCK_REPO: https://github.com/facebookincubator/oculus-linux-kernel
+  STOCK_SHA: 729ec6c4b2086454e0157cbc810f5a460789cc67
+  # Android clang used by build.config.common of the stock tree.
+  CLANG_REV: clang-r416183b
+
+jobs:
+  module:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev cpio \
+            ripgrep python3 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            device-tree-compiler
+
+      - name: Cache stock tree and toolchain
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/stock
+            ~/clang
+          key: stock-${{ env.STOCK_SHA }}-${{ env.CLANG_REV }}-v1
+
+      - name: Fetch stock kernel source
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/stock && cd ~/stock
+          git init -q .
+          git remote add origin "$STOCK_REPO"
+          git fetch -q --depth 1 origin "$STOCK_SHA"
+          git checkout -q FETCH_HEAD
+          git log -1 --format='%H %s'
+
+      - name: Fetch Android clang
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/clang && cd ~/clang
+          ok=0
+          for ref in refs/heads/android12-release refs/heads/android12L-release refs/heads/master-kernel-build-2021 refs/tags/android-12.0.0_r1; do
+            url="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/$ref/$CLANG_REV.tar.gz"
+            echo "trying $url"
+            if curl -fsSL --retry 3 -o clang.tgz "$url"; then
+              tar -xzf clang.tgz && rm clang.tgz && ok=1 && break
+            fi
+          done
+          [ $ok = 1 ] || { echo "Android clang unavailable" >&2; exit 1; }
+          ./bin/clang --version
+
+      - name: Configure stock tree
+        run: |
+          export PATH="$HOME/clang/bin:$PATH"
+          cd ~/stock
+          make -s ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out vendor/oculus_anorak_defconfig
+          grep -E '^CONFIG_(ARM64_VA_BITS|PGTABLE_LEVELS|ARM64_4K_PAGES|KEXEC|CFI_CLANG|LTO_CLANG|SHADOW_CALL_STACK|MODVERSIONS|QCOM_WDT_CORE|GH_VIRT_WATCHDOG|REMOTEPROC|KPROBES)' out/.config || true
+          make -s ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out -j"$(nproc)" modules_prepare
+
+      - name: Build module (candidate, no device CRCs)
+        run: |
+          export PATH="$HOME/clang/bin:$PATH"
+          QUEST_EL1_JOBS=$(nproc) scripts/build-module.sh --check-only ~/stock/out 2>&1 | tee build.log
+          if grep -E ' (warning|error):' build.log; then
+            echo "compiler diagnostics in module build" >&2; exit 1
+          fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-build-log
+          path: |
+            build.log
+            kernel/*.o
+            kernel/arch/arm64/*.o
+          if-no-files-found: ignore
