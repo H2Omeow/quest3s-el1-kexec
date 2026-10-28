@@ -100,6 +100,102 @@ static void make_image(const char *path, uint64_t flags, uint64_t memory_size)
 	write_all(path, image, sizeof(image));
 }
 
+
+static uint64_t reg_cell64(const void *fdt, int node, int index)
+{
+	const fdt32_t *reg;
+	int len;
+	uint64_t value = 0;
+	reg = fdt_getprop(fdt, node, "reg", &len);
+	expect(reg && len >= (index + 1) * 8, "reg present with 2+2 cells");
+	expect(!read_cells(reg + index * 2, 2, &value), "decode reg cells");
+	return value;
+}
+
+/* Add a dynamically placed (size-only) reserved-memory node to a fixture. */
+static void add_dynamic_node(const char *path, const char *name, uint64_t size)
+{
+	unsigned char expanded[8192];
+	void *source;
+	size_t length;
+	int parent, node;
+	fdt32_t cells[2] = {cpu_to_fdt32((uint32_t)(size >> 32)),
+			    cpu_to_fdt32((uint32_t)size)};
+	expect(!read_file(path, MAX_DTB_SIZE, &source, &length), "read FDT fixture");
+	expect(!fdt_open_into(source, expanded, sizeof(expanded)), "expand FDT fixture");
+	free(source);
+	parent = fdt_path_offset(expanded, "/reserved-memory");
+	expect(parent >= 0, "fixture has reserved-memory");
+	node = fdt_add_subnode(expanded, parent, name);
+	expect(node >= 0, "add dynamic node");
+	expect(!fdt_setprop(expanded, node, "size", cells, sizeof(cells)), "size prop");
+	expect(!fdt_setprop_string(expanded, node, "compatible", "ramoops"), "compat");
+	expect(!fdt_setprop_u32(expanded, node, "alignment", 0x100000), "alignment");
+	expect(!fdt_pack(expanded), "pack dynamic fixture");
+	write_all(path, expanded, fdt_totalsize(expanded));
+}
+
+static void write_text(const char *path, const char *text)
+{
+	write_all(path, text, strlen(text));
+}
+
+/* Mirror an FDT into a sysfs-like directory tree, as Linux exposes it. */
+static void fdt_to_fs(const void *fdt, int node, const char *path, bool root)
+{
+	int property, child;
+	char file[1024];
+	expect(!mkdir(path, 0700), "mkdir fs node");
+	fdt_for_each_property_offset(property, fdt, node) {
+		const char *name;
+		int len;
+		const void *value = fdt_getprop_by_offset(fdt, property, &name, &len);
+		snprintf(file, sizeof(file), "%s/%s", path, name);
+		write_all(file, value, (size_t)len);
+	}
+	if (!root) {
+		/* Linux adds a synthesized "name" property to every node. */
+		const char *name = fdt_get_name(fdt, node, NULL);
+		size_t base = strcspn(name, "@");
+		char value[256];
+		memcpy(value, name, base);
+		value[base] = '\0';
+		snprintf(file, sizeof(file), "%s/name", path);
+		write_all(file, value, base + 1);
+	}
+	fdt_for_each_subnode(child, fdt, node) {
+		snprintf(file, sizeof(file), "%s/%s", path,
+			 fdt_get_name(fdt, child, NULL));
+		fdt_to_fs(fdt, child, file, false);
+	}
+}
+
+static void expect_same_tree(const void *original, const void *dumped)
+{
+	int node = -1, depth = 0;
+	while ((node = fdt_next_node(original, node, &depth)) >= 0) {
+		char path[512];
+		int other, property, count = 0, other_count = 0;
+		expect(!fdt_get_path(original, node, path, sizeof(path)), "node path");
+		other = fdt_path_offset(dumped, path);
+		expect(other >= 0, "dumped tree has every node");
+		fdt_for_each_property_offset(property, original, node) {
+			const char *name;
+			int len, other_len;
+			const void *value = fdt_getprop_by_offset(original, property,
+								  &name, &len);
+			const void *copy = fdt_getprop(dumped, other, name, &other_len);
+			expect(copy && other_len == len &&
+			       (!len || !memcmp(copy, value, (size_t)len)),
+			       "dumped property identical");
+			count++;
+		}
+		fdt_for_each_property_offset(property, dumped, other)
+			other_count++;
+		expect(count == other_count, "no synthesized/extra properties dumped");
+	}
+}
+
 static struct options fixture_options(const char *image, const char *dtb)
 {
 	struct options opt = {0};
@@ -253,10 +349,147 @@ int main(void)
 		expect(build_plan(&opt, &plan) == -EINVAL,
 		       "truncated DTB rejected before header access");
 	}
-	unlink(image_path);
-	unlink(dtb_path);
-	unlink(initrd_path);
-	rmdir(dir);
+	{
+		/* Region coalescing to 2 MiB blocks. */
+		struct region in[3] = {{0x80201000ULL, 0x1000ULL},
+				       {0x80000000ULL, 0x1000ULL},
+				       {0x80600000ULL, 0x200000ULL}};
+		struct region out[4];
+		size_t n;
+		expect(!coalesce_regions(in, 3, IMAGE_BASE_ALIGN, out, 4, &n) && n == 2,
+		       "touching blocks merge, distant blocks stay separate");
+		expect(out[0].start == 0x80000000ULL && out[0].size == 0x400000ULL &&
+		       out[1].start == 0x80600000ULL && out[1].size == 0x200000ULL,
+		       "coalesced ranges aligned and sorted");
+		expect(coalesce_regions(in, 3, IMAGE_BASE_ALIGN, out, 1, &n) == -E2BIG,
+		       "coalesce output limit enforced");
+	}
+	{
+		/* /proc/iomem: only top-level System RAM, zeroed view refused. */
+		struct region ram[MAX_REGIONS];
+		size_t n = 0;
+		expect(!parse_iomem_text("80000000-80dfffff : System RAM\n"
+					 "  80080000-8133ffff : Kernel code\n"
+					 "80e00000-8fffffff : reserved\n"
+					 "90000000-97ffffff : System RAM\n", ram, &n) &&
+		       n == 2 && ram[0].size == 0xe00000ULL &&
+		       ram[1].start == 0x90000000ULL, "iomem System RAM parsed");
+		n = 0;
+		expect(parse_iomem_text("00000000-00000000 : System RAM\n", ram, &n) == -EPERM,
+		       "unprivileged zeroed iomem refused");
+	}
+	{
+		/* Live-state report: pin dynamic nodes, no-map secure pages. */
+		char report_path[256];
+		void *dtb;
+		int node;
+		snprintf(report_path, sizeof(report_path), "%s/report.txt", dir);
+		make_fdt(dtb_path, false);
+		add_dynamic_node(dtb_path, "ramoops_region", 0x200000ULL);
+		opt = fixture_options(image_path, dtb_path);
+		expect(build_plan(&opt, &plan) == -EOPNOTSUPP,
+		       "size-only reserved node still refused without a report");
+		write_text(report_path,
+			   "abi 2\n"
+			   "rmem ramoops_region 0x8e000000 0x200000\n"
+			   "secure 0x8c001000 0x1000\n"
+			   "secure 0x8c003000 0x2000\n"
+			   "secure_summary pages=3 ranges=2\n"
+			   "end\n");
+		opt.report_path = report_path;
+		expect(build_plan(&opt, &plan) == 0, "report pins dynamic reservation");
+		dtb = plan.segments[1].data;
+		node = fdt_path_offset(dtb, "/reserved-memory/ramoops_region");
+		expect(node >= 0 && reg_cell64(dtb, node, 0) == 0x8e000000ULL &&
+		       reg_cell64(dtb, node, 1) == 0x200000ULL,
+		       "ramoops pinned at the running kernel's address");
+		expect(!fdt_getprop(dtb, node, "size", NULL) &&
+		       !fdt_getprop(dtb, node, "alignment", NULL),
+		       "dynamic placement properties removed");
+		node = fdt_path_offset(dtb, "/reserved-memory/quest-nomap@8c000000");
+		expect(node >= 0 && fdt_getprop(dtb, node, "no-map", NULL) &&
+		       reg_cell64(dtb, node, 1) == 0x200000ULL,
+		       "secure pages become one 2 MiB no-map node");
+		free_plan(&plan);
+
+		write_text(report_path, "rmem ramoops_region 0x8e000000 0x200000\n");
+		expect(build_plan(&opt, &plan) == -EINVAL, "truncated report refused");
+		write_text(report_path, "rmem ramoops_region 0x8e000000 0x200000\n"
+			   "secure_summary pages=9 ranges=4097 overflow\nend\n");
+		expect(build_plan(&opt, &plan) == -E2BIG, "overflowing secure scan refused");
+		write_text(report_path, "rmem_unavailable\nend\n");
+		expect(build_plan(&opt, &plan) == -EOPNOTSUPP,
+		       "report without reserved_mem table refused");
+		write_text(report_path, "rmem ramoops_region 0x8e000000 0x200000\n"
+			   "secure 0x80090000 0x1000\nend\n");
+		expect(build_plan(&opt, &plan) == -EBUSY,
+		       "secure page inside the kernel destination refused");
+		write_text(report_path, "rmem ramoops_region 0x80000000 0x200000\nend\n");
+		expect(build_plan(&opt, &plan) == -EBUSY,
+		       "pinned reservation overlapping the kernel refused");
+
+		/* Operator --nomap and --disable. */
+		write_text(report_path, "rmem ramoops_region 0x8e000000 0x200000\nend\n");
+		opt.nomap[0] = (struct region){0x8a100000ULL, 0x1000ULL};
+		opt.nr_nomap = 1;
+		opt.disable[0] = "/chosen";
+		opt.nr_disable = 1;
+		expect(build_plan(&opt, &plan) == 0, "nomap and disable accepted");
+		dtb = plan.segments[1].data;
+		node = fdt_path_offset(dtb, "/reserved-memory/quest-nomap@8a000000");
+		expect(node >= 0 && fdt_getprop(dtb, node, "no-map", NULL),
+		       "operator nomap node added");
+		node = fdt_path_offset(dtb, "/chosen");
+		expect(!strcmp(fdt_getprop(dtb, node, "status", NULL), "disabled"),
+		       "disabled node marked");
+		free_plan(&plan);
+		opt.disable[0] = "/no-such-node";
+		expect(build_plan(&opt, &plan) == -ENOENT, "unknown --disable path refused");
+	}
+	{
+		/* dump-dt: sysfs-style tree -> identical DTB + memreserve copy. */
+		char fs_root[256], boot_path[256];
+		unsigned char boot[4096];
+		void *source, *dumped;
+		size_t length, dumped_size;
+		int nr_memreserve;
+		make_fdt(dtb_path, true);
+		add_dynamic_node(dtb_path, "ramoops_region", 0x200000ULL);
+		expect(!read_file(dtb_path, MAX_DTB_SIZE, &source, &length), "read dump fixture");
+		snprintf(fs_root, sizeof(fs_root), "%s/base", dir);
+		fdt_to_fs(source, 0, fs_root, true);
+		expect(!fdt_open_into(source, boot, sizeof(boot)), "expand boot FDT");
+		expect(!fdt_add_mem_rsv(boot, 0x85000000ULL, 0x100000ULL), "add memreserve");
+		snprintf(boot_path, sizeof(boot_path), "%s/fdt", dir);
+		write_all(boot_path, boot, fdt_totalsize(boot));
+		expect(!dump_dt(fs_root, boot_path, &dumped, &dumped_size, &nr_memreserve),
+		       "dump runtime tree");
+		expect(nr_memreserve == 1 && fdt_num_mem_rsv(dumped) == 1,
+		       "memreserve copied from the boot FDT");
+		expect_same_tree(source, dumped);
+		expect_same_tree(dumped, source);
+		free(dumped);
+		expect(!dump_dt(fs_root, "/nonexistent", &dumped, &dumped_size,
+				&nr_memreserve) && nr_memreserve == -1,
+		       "missing boot FDT only drops memreserve");
+		free(dumped);
+		free(source);
+	}
+	{
+		uint32_t flags;
+		expect(!parse_steps("watchdog,mmu", &flags) &&
+		       flags == (QUEST_EL1_REHEARSE_WATCHDOG | QUEST_EL1_REHEARSE_MMU),
+		       "rehearsal step list parsed");
+		expect(!parse_steps("all", &flags) && flags == QUEST_EL1_REHEARSE_ALL,
+		       "all rehearsal steps");
+		expect(parse_steps("watchdog,jump", &flags) == -EINVAL,
+		       "unknown rehearsal step refused");
+	}
+	{
+		char cleanup[300];
+		snprintf(cleanup, sizeof(cleanup), "rm -rf '%s'", dir);
+		expect(system(cleanup) == 0, "remove temp dir");
+	}
 	puts("planner tests: all checks passed");
 	return 0;
 }

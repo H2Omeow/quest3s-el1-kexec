@@ -21,3 +21,19 @@ jobs:
         run: |
           bash -n scripts/build-module.sh scripts/build-user-arm64.sh
           python3 -m py_compile scripts/prepare-image.py tests/test_*.py
+
+  cli-arm64:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install aarch64 cross compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu file
+      - name: Fetch libfdt (dtc 1.7.2)
+        run: |
+          curl -fsSL https://github.com/dgibson/dtc/archive/refs/tags/v1.7.2.tar.gz | tar -xz -C "$RUNNER_TEMP"
+      - name: Build static quest-el1 for the headset
+        run: scripts/build-user-arm64.sh "$RUNNER_TEMP/dtc-1.7.2"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quest-el1-aarch64
+          path: build/bin/quest-el1-aarch64
