@@ -19,6 +19,7 @@
 
 #include <linux/arm-smccc.h>
 #include <linux/device.h>
+#include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/mutex.h>
@@ -29,6 +30,7 @@
 
 #include "kexec_compat.h"
 #include "platform_wdt.h"
+#include "report.h"
 
 #define QUEST_GH_WDT_CONTROL \
 	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_32, \
@@ -103,6 +105,7 @@ int quest_gh_wdt_pet(void)
 	return quest_gh_wdt_call(QUEST_GH_WDT_PET, 0);
 }
 
+#if IS_ENABLED(CONFIG_QCOM_WDT_CORE)
 static bool quest_wdt_ops_is_gh(const struct qcom_wdt_ops *ops)
 {
 	unsigned long gh_ops = quest_lookup_name("gh_wdt_ops");
@@ -182,6 +185,8 @@ int __nocfi quest_gh_wdt_resume(struct device *dev, struct msm_watchdog_data *wd
 		ret = quest_gh_wdt_set(true);
 	return ret;
 }
+
+#endif /* CONFIG_QCOM_WDT_CORE */
 
 static struct device *quest_node_device(struct device_node *np)
 {

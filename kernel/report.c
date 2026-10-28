@@ -19,11 +19,13 @@
 #include "arch/arm64/machine_kexec_compat.h"
 #include "platform_quest.h"
 #include "platform_rproc.h"
+#include "platform_secure.h"
 #include "platform_wdt.h"
 #include "report.h"
 #include "../include/quest_el1_uapi.h"
 
-#define QUEST_REPORT_CAP (64 * 1024)
+/* Up to 4096 "secure" plus 4096 "dmabuf_shared" lines must fit. */
+#define QUEST_REPORT_CAP (1024 * 1024)
 
 void quest_report_add(struct quest_report *r, const char *fmt, ...)
 {
@@ -100,6 +102,7 @@ int quest_report_build(struct quest_report *r)
 	quest_rproc_report(r);
 	quest_report_rmem(r);
 	quest_secure_report(r);
+	quest_report_rehearsal(r);
 	/* A missing final line tells the reader the buffer overflowed. */
 	quest_report_add(r, "end\n");
 	return 0;

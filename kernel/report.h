@@ -20,6 +20,8 @@ struct quest_report {
 
 __printf(2, 3) void quest_report_add(struct quest_report *r, const char *fmt, ...);
 int quest_report_build(struct quest_report *r);
+/* Appends "rehearse ..." lines describing the last REHEARSE call. */
+void quest_report_rehearsal(struct quest_report *r);
 void quest_report_free(struct quest_report *r);
 
 #endif

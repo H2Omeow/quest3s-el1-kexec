@@ -239,6 +239,16 @@ int __nocfi quest_rproc_stop(const char *spec)
 	return ret;
 }
 
+unsigned int quest_rproc_stopped_count(void)
+{
+	unsigned int n;
+
+	mutex_lock(&quest_rproc_lock);
+	n = nr_stopped;
+	mutex_unlock(&quest_rproc_lock);
+	return n;
+}
+
 /* Successful handoff: forget the references, the old kernel is gone. */
 void quest_rproc_commit(void)
 {

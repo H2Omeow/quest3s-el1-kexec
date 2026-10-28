@@ -18,13 +18,23 @@
  * shutdown_ok() after device_shutdown(); failure then requires panic/reboot,
  * not an attempted resume. Successful handoff never calls cancel().
  *
- * This adapter deliberately rejects bound QTEE, QSEE and smcinvoke drivers.
+ * By default this adapter rejects bound QTEE, QSEE and smcinvoke drivers.
  * Their secure-world state has no source-backed ownership transfer contract.
- * This remains a substantive handoff blocker on systems using those drivers;
- * the adapter does not solve the secure-world ownership transfer itself.
+ * allow_tee=1 lets an operator proceed anyway; the target DTB must then
+ * disable those nodes (the Quest Pro procedure). The adapter does not solve
+ * the secure-world ownership transfer itself.
+ *
+ * Watchdogs: msm_watchdog (MMIO) and gh-watchdog (Gunyah SMC) are stopped
+ * from their shutdown callbacks. Any other available watchdog DT node, or one
+ * without a bound supported driver, makes prepare() fail.
  */
+struct quest_report;
+
 int quest_platform_prepare(void);
 void quest_platform_cancel(void);
 bool quest_platform_shutdown_ok(void);
+void quest_platform_report(struct quest_report *r);
+/* Reversible: stop and restart the watchdogs prepare() would handle. */
+int quest_platform_rehearse_watchdog(unsigned int *stopped);
 
 #endif

@@ -11,6 +11,7 @@
 #include <linux/security.h>
 #include <linux/ioport.h>
 #include <linux/uaccess.h>
+#include <linux/slab.h>
 #include <linux/kernel_read_file.h>
 #include <asm/pgtable.h>
 #include <asm/sysreg.h>
@@ -21,13 +22,16 @@
 #include "kexec_internal.h"
 #include "platform_pci.h"
 #include "platform_quest.h"
+#include "platform_rproc.h"
+#include "rehearse.h"
+#include "report.h"
 #include "memory_guard.h"
 #include "arch/arm64/machine_kexec_compat.h"
 
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Quest EL1 kexec");
 MODULE_DESCRIPTION("Self-contained EL1 kexec loader for ARM64");
-MODULE_VERSION("0.1");
+MODULE_VERSION("0.2");
 
 static int quest_check_credential(void)
 {
@@ -38,8 +42,9 @@ static int quest_check_credential(void)
 
 static int quest_check_header(const struct quest_el1_header *hdr)
 {
+	/* ABI 2 only added REHEARSE and read(); ABI-1 requests are unchanged. */
 	if (hdr->magic != QUEST_EL1_MAGIC ||
-	    hdr->abi_version != QUEST_EL1_ABI_VERSION)
+	    (hdr->abi_version != QUEST_EL1_ABI_VERSION && hdr->abi_version != 1))
 		return -EPROTO;
 	return 0;
 }
@@ -195,6 +200,15 @@ static int quest_execute(void)
 	ret = quest_arch_check();
 	if (ret)
 		goto unlock_image;
+	/*
+	 * Stop DMA-capable remote processors (stop_remoteprocs=) while their
+	 * clients are frozen; q6v5_pas has no shutdown callback, so
+	 * device_shutdown() alone would leave them running on the new kernel's
+	 * memory. A failed stop restarts whatever it had stopped.
+	 */
+	ret = quest_rproc_stop(NULL);
+	if (ret)
+		goto unlock_image;
 
 	/* The userspace freezer alone does not stop deferred probe workers. */
 	quest_block_probing();
@@ -210,6 +224,7 @@ static int quest_execute(void)
 
 	/* No return to userspace after shutdown notifiers/devices run. */
 	kexec_in_progress = true;
+	quest_rproc_commit();
 	quest_kernel_restart_prepare(NULL);
 	if (!quest_platform_shutdown_ok())
 		panic("quest_el1: platform shutdown failed; refusing handoff");
@@ -222,6 +237,7 @@ static int quest_execute(void)
 
 unblock:
 	quest_unblock_probing();
+	quest_rproc_restart();
 unlock_image:
 	mutex_unlock(&kexec_mutex);
 thaw:
@@ -282,6 +298,22 @@ static long quest_ioctl(struct file *file, unsigned int cmd,
 		mutex_unlock(&kexec_mutex);
 		return 0;
 	}
+	if (cmd == QUEST_EL1_IOC_REHEARSE) {
+		struct quest_el1_rehearse req;
+
+		ret = quest_check_credential();
+		if (ret)
+			return ret;
+		if (hdr.abi_version < 2)
+			return -EPROTO;
+		if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
+			return -EFAULT;
+		ret = quest_rehearse(&req);
+		if (ret)
+			return ret;
+		return copy_to_user((void __user *)arg, &req, sizeof(req)) ?
+			-EFAULT : 0;
+	}
 	if (cmd == QUEST_EL1_IOC_EXEC) {
 		ret = quest_check_credential();
 		if (ret)
@@ -294,8 +326,53 @@ static long quest_ioctl(struct file *file, unsigned int cmd,
 	return -ENOTTY;
 }
 
+/*
+ * read(): the read-only preflight report, generated once per open file at
+ * the first read and released on close, so `cat /dev/quest_el1` works.
+ */
+static ssize_t quest_read(struct file *file, char __user *buf, size_t count,
+			  loff_t *ppos)
+{
+	struct quest_report *r = file->private_data;
+	int ret;
+
+	if (!r) {
+		ret = quest_check_credential();
+		if (ret)
+			return ret;
+		r = kzalloc(sizeof(*r), GFP_KERNEL);
+		if (!r)
+			return -ENOMEM;
+		ret = quest_report_build(r);
+		if (ret) {
+			kfree(r);
+			return ret;
+		}
+		if (cmpxchg(&file->private_data, NULL, r)) {
+			quest_report_free(r);
+			kfree(r);
+			r = file->private_data;
+		}
+	}
+	return simple_read_from_buffer(buf, count, ppos, r->buf, r->len);
+}
+
+static int quest_release(struct inode *inode, struct file *file)
+{
+	struct quest_report *r = file->private_data;
+
+	if (r) {
+		quest_report_free(r);
+		kfree(r);
+	}
+	return 0;
+}
+
 static const struct file_operations quest_fops = {
 	.owner = THIS_MODULE,
+	.read = quest_read,
+	.release = quest_release,
+	.llseek = default_llseek,
 	.unlocked_ioctl = quest_ioctl,
 };
 

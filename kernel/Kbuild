@@ -3,11 +3,13 @@
 obj-m := quest_el1_kexec.o
 quest_el1_kexec-y := kexec_drv.o kexec_compat.o kexec.o kexec_core.o
 quest_el1_kexec-y += platform_pci.o
-quest_el1_kexec-y += platform_quest.o
+quest_el1_kexec-y += platform_quest.o platform_wdt.o platform_rproc.o
+quest_el1_kexec-y += platform_secure.o report.o rehearse.o
 quest_el1_kexec-y += memory_guard.o
 quest_el1_kexec-y += arch/arm64/machine_kexec_drv.o
 quest_el1_kexec-y += arch/arm64/machine_kexec_compat.o
 quest_el1_kexec-y += arch/arm64/idmap.o arch/arm64/cpu-reset.o
 quest_el1_kexec-y += arch/arm64/machine_kexec.o arch/arm64/relocate_kernel.o
+quest_el1_kexec-y += arch/arm64/rehearse.o arch/arm64/rehearse_entry.o
 ccflags-y += -I$(src) -I$(src)/../include
 ccflags-y += -fno-unwind-tables -fno-asynchronous-unwind-tables

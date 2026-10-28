@@ -10,6 +10,7 @@ int quest_rproc_stop(const char *spec);
 void quest_rproc_restart(void);
 /* The handoff is irreversible now; drop bookkeeping. */
 void quest_rproc_commit(void);
+unsigned int quest_rproc_stopped_count(void);
 void quest_rproc_report(struct quest_report *r);
 
 #endif
