@@ -5,6 +5,8 @@
 #include <linux/errno.h>
 #include <linux/kprobes.h>
 #include <linux/freezer.h>
+#include <linux/delay.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/types.h>
@@ -52,9 +54,30 @@ struct mutex *quest_transition_mutex(void)
 	return transition_mutex_ptr;
 }
 
+/*
+ * Android keeps wakeup sources busy (autosleep, sensor/USB wake IRQs), and a
+ * wakeup event racing the freezer makes freeze_processes() abort with -EBUSY
+ * after thawing everything again. Such events are transient; retry a few
+ * times instead of failing the whole handoff (the Quest Pro port hit this on
+ * almost every attempt).
+ */
+static unsigned int freeze_attempts = 5;
+module_param(freeze_attempts, uint, 0600);
+MODULE_PARM_DESC(freeze_attempts, "freeze_processes() attempts on -EBUSY (1-20)");
+
 int __nocfi quest_freeze_processes(void)
 {
-	return freeze_ptr();
+	unsigned int attempt, attempts = clamp_val(READ_ONCE(freeze_attempts), 1U, 20U);
+	int ret;
+
+	for (attempt = 1;; attempt++) {
+		ret = freeze_ptr();
+		if (ret != -EBUSY || attempt >= attempts)
+			return ret;
+		pr_warn("freeze_processes busy (wakeup event), retry %u/%u\n",
+			attempt, attempts - 1);
+		msleep(200);
+	}
 }
 
 void __nocfi quest_thaw_processes(void)
