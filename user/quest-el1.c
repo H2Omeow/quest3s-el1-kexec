@@ -1350,8 +1350,8 @@ static int fdt_errno(int fdt_ret)
 static int dump_dt_node(void *fdt, const char *path, const char *node_name,
 			unsigned int depth)
 {
-	char **names;
-	size_t count, i, base_len = strcspn(node_name, "@");
+	char **names = NULL;
+	size_t count = 0, i, base_len = strcspn(node_name, "@");
 	int ret, pass;
 
 	if (depth > 64)
