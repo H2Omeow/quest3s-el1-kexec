@@ -13,8 +13,8 @@ struct kimage { int unused; };
 static struct mutex transition_mutex, kexec_mutex;
 static struct kimage image, *kexec_image;
 static bool kexec_in_progress, frozen, probes_blocked, irreversible;
-static bool platform_held, shutdown_good, transfer_returns;
-static int freeze_error, arch_error, memory_error, platform_error;
+static bool platform_held, shutdown_good, transfer_returns, rprocs_down, rprocs_committed;
+static int freeze_error, arch_error, memory_error, platform_error, rproc_error;
 static char events[1024];
 static jmp_buf escape;
 
@@ -71,6 +71,28 @@ static int quest_validate_destinations(struct kimage *loaded)
 	assert(kexec_mutex.locked && !platform_held);
 	note("memory");
 	return memory_error;
+}
+
+static int quest_rproc_stop(const char *spec)
+{
+	assert(!spec && frozen && kexec_mutex.locked && !probes_blocked);
+	note("rproc_stop");
+	rprocs_down = !rproc_error; /* A failed stop restarts what it stopped. */
+	return rproc_error;
+}
+
+static void quest_rproc_restart(void)
+{
+	assert(!irreversible && frozen && !probes_blocked);
+	note("rproc_restart");
+	rprocs_down = false;
+}
+
+static void quest_rproc_commit(void)
+{
+	assert(kexec_in_progress && !irreversible && platform_held);
+	note("rproc_commit");
+	rprocs_committed = true;
 }
 
 static void quest_block_probing(void)
@@ -144,9 +166,9 @@ static void reset(void)
 	transition_mutex.locked = kexec_mutex.locked = false;
 	kexec_image = &image;
 	kexec_in_progress = frozen = probes_blocked = irreversible = false;
-	platform_held = transfer_returns = false;
+	platform_held = transfer_returns = rprocs_down = rprocs_committed = false;
 	shutdown_good = true;
-	freeze_error = arch_error = memory_error = platform_error = 0;
+	freeze_error = arch_error = memory_error = platform_error = rproc_error = 0;
 	events[0] = '\0';
 }
 
@@ -155,7 +177,7 @@ static void expect_return(int error, const char *trace)
 	int result = quest_execute();
 	assert(result == error);
 	assert(!frozen && !probes_blocked && !platform_held);
-	assert(!irreversible && !kexec_in_progress);
+	assert(!irreversible && !kexec_in_progress && !rprocs_down && !rprocs_committed);
 	assert(!strcmp(events, trace));
 }
 
@@ -169,11 +191,12 @@ static void expect_terminal(int expected, const char *trace)
 	assert(jumped == expected);
 	assert(irreversible && frozen && probes_blocked && platform_held);
 	assert(transition_mutex.locked && kexec_mutex.locked && kexec_in_progress);
+	assert(rprocs_committed);
 	assert(!strcmp(events, trace));
 }
 
-#define PREFIX "transition_lock freeze image_lock arch block memory prepare "
-#define TRANSFER PREFIX "restart_prepare shutdown_check pci migrate hotplug_enable machine_shutdown transfer "
+#define PREFIX "transition_lock freeze image_lock arch rproc_stop block memory prepare "
+#define TRANSFER PREFIX "rproc_commit restart_prepare shutdown_check pci migrate hotplug_enable machine_shutdown transfer "
 
 int main(void)
 {
@@ -195,16 +218,20 @@ int main(void)
 	reset(); arch_error = -EOPNOTSUPP;
 	expect_return(-EOPNOTSUPP, "transition_lock freeze image_lock arch image_unlock thaw transition_unlock ");
 
+	reset(); rproc_error = -EBUSY;
+	expect_return(-EBUSY, "transition_lock freeze image_lock arch rproc_stop image_unlock thaw transition_unlock ");
+	assert(!transition_mutex.locked && !kexec_mutex.locked);
+
 	reset(); memory_error = -EADDRNOTAVAIL;
-	expect_return(-EADDRNOTAVAIL, "transition_lock freeze image_lock arch block memory unblock image_unlock thaw transition_unlock ");
+	expect_return(-EADDRNOTAVAIL, "transition_lock freeze image_lock arch rproc_stop block memory unblock rproc_restart image_unlock thaw transition_unlock ");
 	assert(!transition_mutex.locked && !kexec_mutex.locked);
 
 	reset(); platform_error = -EOPNOTSUPP;
-	expect_return(-EOPNOTSUPP, PREFIX "cancel unblock image_unlock thaw transition_unlock ");
+	expect_return(-EOPNOTSUPP, PREFIX "cancel unblock rproc_restart image_unlock thaw transition_unlock ");
 	assert(!transition_mutex.locked && !kexec_mutex.locked);
 
 	reset(); shutdown_good = false;
-	expect_terminal(1, PREFIX "restart_prepare shutdown_check panic_platform ");
+	expect_terminal(1, PREFIX "rproc_commit restart_prepare shutdown_check panic_platform ");
 
 	reset();
 	expect_terminal(2, TRANSFER);
@@ -212,6 +239,6 @@ int main(void)
 	reset(); transfer_returns = true;
 	expect_terminal(1, TRANSFER "panic_return ");
 
-	puts("handoff_exec: 10 actual EXEC control-flow scenarios passed");
+	puts("handoff_exec: 11 actual EXEC control-flow scenarios passed");
 	return 0;
 }

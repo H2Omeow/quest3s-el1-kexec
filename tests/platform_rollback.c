@@ -25,6 +25,7 @@ typedef uint32_t u32;
 #define qcom_scm_driver scm_driver
 #define qcom_soc_wdt_driver wdt_driver
 #define qcom_soc_wdt_ops wdt_ops
+#define gh_wdt_driver gh_driver
 #define system_transition_mutex transition_mutex
 
 struct mutex { bool locked; };
@@ -88,22 +89,30 @@ struct quest_platform_binding {
 };
 
 static struct mutex quest_platform_lock, module_mutex, transition_mutex;
-static struct module loader_module, scm_module, wdt_module, tee_module;
+static struct module loader_module, scm_module, wdt_module, tee_module, gh_module;
 static struct bus_type platform_bus_type;
 static struct fake_task task = { .flags = PF_SUSPEND_TASK };
 #define current (&task)
 static bool pm_freezing = true, defer_all_probes = true;
 static bool prepared, self_pinned;
 static int shutdown_error;
-static struct quest_platform_binding scm_binding, wdt_binding;
+static struct quest_platform_binding scm_binding, wdt_binding, gh_binding;
+static bool allow_tee;
+static struct msm_watchdog_data *gh_watchdog_data;
 static struct msm_watchdog_data *watchdog_data;
 static struct qcom_wdt_ops *watchdog_ops;
 static int (*watchdog_suspend)(struct device *);
 static int (*secure_watchdog_disable)(void);
 static struct resource wdt_resource = { .size = 0x18 };
-static struct platform_device scm_pdev, wdt_pdev, tee_pdev;
-static struct platform_driver scm_driver, wdt_driver, tee_driver;
-static struct msm_watchdog_data wdt_state;
+static struct platform_device scm_pdev, wdt_pdev, tee_pdev, gh_pdev;
+static struct platform_driver scm_driver, wdt_driver, tee_driver, gh_driver;
+static struct msm_watchdog_data wdt_state, gh_state;
+static char gh_wdt_match_table[1];
+static bool gh_present;
+static int gh_check_result, gh_disable_result, gh_resume_result, dt_check_result;
+static int gh_disable_calls, gh_resume_calls, resume_calls;
+static u32 gh_status_enabled;
+
 static struct qcom_wdt_ops wdt_ops;
 static char qcom_scm_dt_match[1], qcom_soc_match_table[1];
 static struct task_struct wdt_task;
@@ -161,6 +170,7 @@ static struct platform_driver *to_platform_driver(struct device_driver *driver)
 #define pr_err(...) ((void)0)
 #define pr_info(...) ((void)0)
 #define pr_emerg(...) ((void)0)
+#define pr_warn(...) ((void)0)
 #define resource_size(resource) ((resource)->size)
 
 static void platform_drv_shutdown(struct device *device) { (void)device; }
@@ -191,6 +201,47 @@ static int qcom_scm_sec_wdog_deactivate(void)
 	hardware_calls++;
 	return secure_disable_result;
 }
+static int qcom_wdt_pet_resume(struct device *device)
+{
+	(void)device;
+	resume_calls++;
+	return 0;
+}
+static int gh_wdt_probe(struct platform_device *pdev) { (void)pdev; return 0; }
+static int quest_gh_wdt_check(struct device *dev, struct msm_watchdog_data **out)
+{
+	assert(dev == &gh_pdev.dev && dev->locked);
+	if (!gh_check_result)
+		*out = dev->drvdata;
+	return gh_check_result;
+}
+static int quest_gh_wdt_disable(struct device *dev, struct msm_watchdog_data *wd)
+{
+	assert(dev == &gh_pdev.dev && wd == &gh_state);
+	gh_disable_calls++;
+	if (!gh_disable_result)
+		gh_status_enabled = 0;
+	return gh_disable_result;
+}
+static int quest_gh_wdt_resume(struct device *dev, struct msm_watchdog_data *wd)
+{
+	assert(dev == &gh_pdev.dev && wd == &gh_state);
+	gh_resume_calls++;
+	gh_status_enabled = 1;
+	return gh_resume_result;
+}
+static int quest_gh_wdt_status(u32 *enabled, u32 *expired, u32 *since)
+{
+	assert(!expired && !since);
+	*enabled = gh_status_enabled;
+	return 0;
+}
+static int quest_wdt_dt_check(const struct device *msm, const struct device *gh,
+			      char *why, size_t len)
+{
+	assert(msm == wdt_binding.dev && gh == gh_binding.dev && why && len);
+	return dt_check_result;
+}
 
 static struct device_driver *driver_find(const char *name, struct bus_type *bus)
 {
@@ -198,6 +249,7 @@ static struct device_driver *driver_find(const char *name, struct bus_type *bus)
 	if (!strcmp(name, "qcom_scm")) return &scm_driver.driver;
 	if (!strcmp(name, "msm_watchdog")) return &wdt_driver.driver;
 	if (!strcmp(name, "shared_memory_bridge")) return &tee_driver.driver;
+	if (!strcmp(name, "gh-watchdog") && gh_present) return &gh_driver.driver;
 	return NULL;
 }
 
@@ -210,6 +262,8 @@ static int driver_for_each_device(struct device_driver *driver, void *data,
 		return callback(&scm_pdev.dev, context);
 	if (driver == &wdt_driver.driver && wdt_pdev.dev.driver == driver)
 		return callback(&wdt_pdev.dev, context);
+	if (driver == &gh_driver.driver && gh_pdev.dev.driver == driver)
+		return callback(&gh_pdev.dev, context);
 	if (driver == &tee_driver.driver && tee_bound)
 		return callback(&tee_pdev.dev, context);
 	return 0;
@@ -239,6 +293,10 @@ static unsigned long quest_lookup_name(const char *name)
 	SYMBOL(qcom_soc_enable_wdt);
 	SYMBOL(qcom_wdt_pet_suspend);
 	SYMBOL(qcom_scm_sec_wdog_deactivate);
+	SYMBOL(qcom_wdt_pet_resume);
+	SYMBOL(gh_wdt_driver);
+	SYMBOL(gh_wdt_probe);
+	SYMBOL(gh_wdt_match_table);
 #undef SYMBOL
 	return 0;
 }
@@ -262,6 +320,29 @@ static void reset(void)
 	memset(&wdt_ops, 0, sizeof(wdt_ops));
 	memset(&wdt_resource, 0, sizeof(wdt_resource));
 	memset(wdt_registers, 0, sizeof(wdt_registers));
+	memset(&gh_module, 0, sizeof(gh_module));
+	memset(&gh_pdev, 0, sizeof(gh_pdev));
+	memset(&gh_state, 0, sizeof(gh_state));
+	gh_driver = (struct platform_driver) {
+		.probe = gh_wdt_probe,
+		.remove = qcom_wdt_remove,
+		.driver = { .name = "gh-watchdog", .bus = &platform_bus_type,
+			.owner = &gh_module, .shutdown = platform_drv_shutdown,
+			.of_match_table = gh_wdt_match_table },
+	};
+	gh_pdev.dev.driver = &gh_driver.driver;
+	gh_pdev.dev.bus = &platform_bus_type;
+	gh_pdev.dev.of_node = &gh_driver;
+	gh_pdev.dev.drvdata = &gh_state;
+	gh_state.dev = &gh_pdev.dev;
+	gh_state.watchdog_task = &wdt_task;
+	gh_state.enabled = true;
+	gh_present = allow_tee = false;
+	gh_check_result = gh_disable_result = gh_resume_result = dt_check_result = 0;
+	gh_disable_calls = gh_resume_calls = resume_calls = 0;
+	gh_status_enabled = 1;
+	memset(&gh_binding, 0, sizeof(gh_binding));
+	gh_watchdog_data = NULL;
 	scm_driver = (struct platform_driver) {
 		.probe = qcom_scm_probe,
 		.shutdown = qcom_scm_shutdown,
@@ -331,6 +412,9 @@ static void clean(void (*scm)(struct platform_device *),
 	assert(!quest_platform_lock.locked && !module_mutex.locked);
 	assert(!scm_pdev.dev.locked && !wdt_pdev.dev.locked);
 	assert(!hardware_calls && !callback_calls);
+	assert(!gh_binding.dev && !gh_module.references && !gh_pdev.dev.refs);
+	assert(!gh_watchdog_data && gh_driver.shutdown == NULL && !gh_pdev.dev.locked);
+	assert(!gh_disable_calls && !gh_resume_calls && !resume_calls);
 }
 
 int main(void)
@@ -458,6 +542,85 @@ int main(void)
 	assert(hardware_calls == 2 && callback_calls == 1);
 	assert(wdt_registers[2] == 1);
 
-	puts("platform_rollback: 24 production-path scenarios passed");
+	/* allow_tee=1: a bound TEE driver no longer blocks prepare(). */
+	reset(); allow_tee = true;
+	tee_bound = true;
+	tee_pdev.dev.driver = &tee_driver.driver;
+	assert(quest_platform_prepare() == 0);
+	quest_platform_cancel();
+	clean(qcom_scm_shutdown, NULL);
+
+	/* Gunyah watchdog: installed, stopped from its shutdown callback. */
+	reset(); gh_present = true;
+	assert(quest_platform_prepare() == 0);
+	assert(gh_binding.installed && gh_driver.shutdown == quest_gh_watchdog_shutdown);
+	assert(gh_module.references == 1 && gh_watchdog_data == &gh_state);
+	quest_scm_warm_shutdown(&scm_pdev);
+	quest_watchdog_shutdown(&wdt_pdev);
+	assert(!quest_platform_shutdown_ok()); /* gh-watchdog not stopped yet */
+	quest_gh_watchdog_shutdown(&gh_pdev);
+	assert(quest_platform_shutdown_ok() && gh_disable_calls == 1);
+
+	reset(); gh_present = true;
+	assert(quest_platform_prepare() == 0);
+	gh_disable_result = -EIO;
+	quest_scm_warm_shutdown(&scm_pdev);
+	quest_watchdog_shutdown(&wdt_pdev);
+	quest_gh_watchdog_shutdown(&gh_pdev);
+	assert(!quest_platform_shutdown_ok() && shutdown_error == -EIO);
+
+	reset(); gh_present = true;
+	assert(quest_platform_prepare() == 0);
+	quest_gh_watchdog_shutdown(&wdt_pdev); /* wrong device */
+	assert(shutdown_error == -ENODEV && !gh_disable_calls);
+
+	reset(); gh_present = true; gh_check_result = -EOPNOTSUPP;
+	assert(quest_platform_prepare() == -EOPNOTSUPP);
+	clean(qcom_scm_shutdown, NULL);
+	reset(); gh_present = true; denied_module = &gh_module;
+	assert(quest_platform_prepare() == -EBUSY);
+	clean(qcom_scm_shutdown, NULL);
+	reset(); gh_present = true; gh_pdev.dev.driver = NULL;
+	assert(quest_platform_prepare() == -ENODEV);
+	clean(qcom_scm_shutdown, NULL);
+
+	/* An unhandled watchdog DT node fails closed before any install. */
+	reset(); dt_check_result = -EOPNOTSUPP;
+	assert(quest_platform_prepare() == -EOPNOTSUPP);
+	clean(qcom_scm_shutdown, NULL);
+
+	/* Watchdog rehearsal: stop+restart both, leave nothing installed. */
+	reset(); gh_present = true; transition_mutex.locked = false;
+	{
+		unsigned int stopped = 0;
+
+		assert(quest_platform_rehearse_watchdog(&stopped) == 0);
+		assert(stopped == 2);
+		assert(hardware_calls == 1 && callback_calls == 1 && resume_calls == 1);
+		assert(gh_disable_calls == 1 && gh_resume_calls == 1 && gh_status_enabled);
+		hardware_calls = callback_calls = resume_calls = 0;
+		gh_disable_calls = gh_resume_calls = 0;
+		clean(qcom_scm_shutdown, NULL);
+
+		reset(); gh_present = true; gh_disable_result = -EIO;
+		assert(quest_platform_rehearse_watchdog(&stopped) == -EIO);
+		assert(gh_resume_calls == 1); /* always re-armed */
+		hardware_calls = callback_calls = resume_calls = 0;
+		gh_disable_calls = gh_resume_calls = 0;
+		clean(qcom_scm_shutdown, NULL);
+
+		reset(); dt_check_result = -EOPNOTSUPP;
+		assert(quest_platform_rehearse_watchdog(&stopped) == -EOPNOTSUPP);
+		assert(stopped == 0);
+		clean(qcom_scm_shutdown, NULL);
+
+		reset();
+		assert(quest_platform_prepare() == 0);
+		assert(quest_platform_rehearse_watchdog(&stopped) == -EBUSY);
+		quest_platform_cancel();
+		clean(qcom_scm_shutdown, NULL);
+	}
+
+	puts("platform_rollback: 38 production-path scenarios passed");
 	return 0;
 }
