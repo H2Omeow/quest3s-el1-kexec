@@ -72,10 +72,10 @@ jobs:
         run: |
           export PATH="$HOME/clang/bin:$PATH"
           cd ~/stock
-          make -s ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+          make -s ARCH=arm64 LLVM=1 LLVM_IAS=1 REAL_CC=clang CROSS_COMPILE=aarch64-linux-gnu- \
             O=out vendor/oculus_anorak_defconfig
           grep -E '^CONFIG_(ARM64_VA_BITS|PGTABLE_LEVELS|ARM64_4K_PAGES|KEXEC|CFI_CLANG|LTO_CLANG|SHADOW_CALL_STACK|MODVERSIONS|QCOM_WDT_CORE|GH_VIRT_WATCHDOG|REMOTEPROC|KPROBES)' out/.config || true
-          make -s ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+          make -s ARCH=arm64 LLVM=1 LLVM_IAS=1 REAL_CC=clang CROSS_COMPILE=aarch64-linux-gnu- \
             O=out -j"$(nproc)" modules_prepare
 
       - name: Build module (candidate, no device CRCs)
