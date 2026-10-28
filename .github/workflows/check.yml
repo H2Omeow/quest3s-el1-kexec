@@ -1,0 +1,23 @@
+name: Host checks
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  planner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libfdt development package
+        run: sudo apt-get update && sudo apt-get install -y libfdt-dev
+      - name: Build CLI and test planner
+        run: make -C user CFLAGS='-O2 -Wall -Wextra -Werror' quest-el1 test
+      - name: Test production handoff and memory validation with stubs
+        run: |
+          for test in tests/test_*.py; do python3 -I "$test"; done
+      - name: Check scripts
+        run: |
+          bash -n scripts/build-module.sh scripts/build-user-arm64.sh
+          python3 -m py_compile scripts/prepare-image.py tests/test_*.py

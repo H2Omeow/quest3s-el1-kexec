@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0
+# The stock kernel has CONFIG_KEXEC_CORE=n; carry the complete loader here.
+obj-m := quest_el1_kexec.o
+quest_el1_kexec-y := kexec_drv.o kexec_compat.o kexec.o kexec_core.o
+quest_el1_kexec-y += platform_pci.o
+quest_el1_kexec-y += platform_quest.o
+quest_el1_kexec-y += memory_guard.o
+quest_el1_kexec-y += arch/arm64/machine_kexec_drv.o
+quest_el1_kexec-y += arch/arm64/machine_kexec_compat.o
+quest_el1_kexec-y += arch/arm64/idmap.o arch/arm64/cpu-reset.o
+quest_el1_kexec-y += arch/arm64/machine_kexec.o arch/arm64/relocate_kernel.o
+ccflags-y += -I$(src) -I$(src)/../include
+ccflags-y += -fno-unwind-tables -fno-asynchronous-unwind-tables

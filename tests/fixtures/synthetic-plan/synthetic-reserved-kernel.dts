@@ -1,0 +1,31 @@
+/dts-v1/;
+
+/* SYNTHETIC HOST PLANNER FIXTURE. These are NOT Quest device addresses. */
+/memreserve/ 0x8ff00000 0x00100000;
+
+/ {
+	model = "SYNTHETIC planner fixture - NOT Quest device data";
+	compatible = "test,quest-el1-synthetic-only";
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0 0x80000000 0 0x10000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		validation-reserved@80000000 {
+			reg = <0 0x80000000 0 0x00400000>;
+			no-map;
+		};
+	};
+
+	chosen {
+		bootargs = "quest_el1.synthetic_validation=1";
+	};
+};

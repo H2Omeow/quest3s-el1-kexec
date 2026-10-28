@@ -1,0 +1,2 @@
+# ARM64 objects are linked into the single parent quest_el1_kexec module.
+# No separate architecture module or EL2/HVC shim is built.
