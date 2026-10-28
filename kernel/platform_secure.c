@@ -62,12 +62,14 @@ static void quest_secure_flush(struct quest_secure_scan *s)
 	s->run_len = 0;
 }
 
-static int quest_secure_walk(unsigned long start_pfn, unsigned long nr, void *arg)
+static int quest_secure_walk(struct resource *res, void *arg)
 {
 	struct quest_secure_scan *s = arg;
+	unsigned long start_pfn = PHYS_PFN(res->start);
+	unsigned long end_pfn = PHYS_PFN(res->end + 1);
 	unsigned long pfn;
 
-	for (pfn = start_pfn; pfn < start_pfn + nr; pfn++) {
+	for (pfn = start_pfn; pfn < end_pfn; pfn++) {
 		struct page *page;
 		bool secure;
 
@@ -100,7 +102,13 @@ static void quest_secure_scan_pages(struct quest_report *r)
 {
 	struct quest_secure_scan s = { .report = r };
 
-	walk_system_ram_range(0, PHYS_PFN((phys_addr_t)-1), &s, quest_secure_walk);
+	/*
+	 * walk_system_ram_range() is not exported by this kernel; walk the
+	 * same System RAM resources through the exported iomem walker.
+	 */
+	walk_iomem_res_desc(IORES_DESC_NONE,
+			    IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY,
+			    0, (u64)-1, &s, quest_secure_walk);
 	quest_report_add(r, "secure_summary pages=%lu ranges=%lu%s\n", s.pages,
 			 s.ranges, s.overflow ? " overflow" : "");
 }
