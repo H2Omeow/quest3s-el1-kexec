@@ -1,0 +1,198 @@
+name: Device-ABI module build
+
+# Build the loadable loader module for the Quest 3S that reported
+#   Linux 5.10.240-g9cb2f620a9a8 #1 SMP PREEMPT Thu Jul 2 23:18:32 PDT 2026
+# using that kernel's own /proc/config.gz (device/*.config), the clang release
+# named in its CONFIG_CC_VERSION_TEXT and the Module.symvers recovered from its
+# boot image (scripts/stock-symvers.py).  modpost then refuses any import that
+# the device does not export, and check-module-abi.py re-checks every CRC and
+# the vermagic string the device's load_module() compares.
+#
+# The kmi job compiles the whole public stock tree with the device config and
+# compares every generated export CRC with the device: equality proves that
+# the public source, configuration and toolchain reproduce the device KMI, so
+# structure layouts seen by the loader are the device's.
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  STOCK_REPO: https://github.com/facebookincubator/oculus-linux-kernel
+  STOCK_SHA: 729ec6c4b2086454e0157cbc810f5a460789cc67
+  CLANG_REV: clang-r450784e
+  CLANG_REF: refs/heads/android14-release
+  DEVICE_RELEASE: 5.10.240-g9cb2f620a9a8
+  DEVICE_CONFIG: device/stock-5.10.240-g9cb2f620a9a8.config
+  DEVICE_SYMVERS: device/stock-5.10.240-g9cb2f620a9a8.symvers
+  MAKEFLAGS_K: ARCH=arm64 LLVM=1 LLVM_IAS=1 REAL_CC=clang CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION=
+
+jobs:
+  loader:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev cpio \
+            ripgrep python3 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+      - name: Cache stock tree and toolchain
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/stock
+            ~/clang
+          key: devstock-${{ env.STOCK_SHA }}-${{ env.CLANG_REV }}-v1
+
+      - name: Fetch stock source and clang
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/stock && cd ~/stock
+          git init -q . && git remote add origin "$STOCK_REPO"
+          git fetch -q --depth 1 origin "$STOCK_SHA" && git checkout -q FETCH_HEAD
+          rm -rf .git
+          mkdir -p ~/clang && cd ~/clang
+          curl -fsSL --retry 3 -o clang.tgz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/$CLANG_REF/$CLANG_REV.tar.gz"
+          tar -xzf clang.tgz && rm clang.tgz
+
+      - name: Configure with the device configuration
+        run: |
+          export PATH="$HOME/clang/bin:$PATH"
+          clang --version | head -1
+          cd ~/stock
+          rm -rf out && mkdir out
+          cp "$GITHUB_WORKSPACE/$DEVICE_CONFIG" out/.config
+          # setlocalversion would derive -g<sha> from git; pin it instead.
+          scripts/config --file out/.config --set-str LOCALVERSION "-g9cb2f620a9a8" \
+            -d LOCALVERSION_AUTO -d DEBUG_INFO_BTF -d DEBUG_INFO
+          make -s $MAKEFLAGS_K O=out olddefconfig
+          echo "== differences against the device configuration =="
+          diff <(grep '^CONFIG_' "$GITHUB_WORKSPACE/$DEVICE_CONFIG" | sort) \
+               <(grep '^CONFIG_' out/.config | sort) | tee config.diff || true
+          # CC_CAN_LINK* are host-capability probes that /proc/config.gz of the
+          # device does not carry; LOCALVERSION/DEBUG_INFO* are pinned above.
+          if grep -E '^[<>]' config.diff | grep -vE 'CONFIG_(LOCALVERSION|LOCALVERSION_AUTO|DEBUG_INFO[A-Z0-9_]*|PAHOLE_HAS[A-Z_]*|CC_CAN_LINK[A-Z_]*)='; then
+            echo "olddefconfig changed configuration beyond the pinned version/debug keys" >&2
+            exit 1
+          fi
+          make -s $MAKEFLAGS_K O=out -j"$(nproc)" modules_prepare
+          release=$(cat out/include/config/kernel.release)
+          echo "kernel.release=$release"
+          [ "$release" = "$DEVICE_RELEASE" ] || { echo "release mismatch" >&2; exit 1; }
+          cp "$GITHUB_WORKSPACE/$DEVICE_SYMVERS" out/Module.symvers
+
+      - name: Build quest_el1_kexec.ko against the device symbols
+        run: |
+          export PATH="$HOME/clang/bin:$PATH"
+          QUEST_EL1_JOBS=$(nproc) scripts/build-module.sh ~/stock/out 2>&1 | tee build.log
+          if grep -E ' (warning|error):|WARNING:' build.log; then
+            echo "diagnostics in device module build" >&2; exit 1
+          fi
+          python3 scripts/check-module-abi.py --symvers "$DEVICE_SYMVERS" \
+            --vermagic "$DEVICE_RELEASE SMP preempt mod_unload modversions aarch64" \
+            kernel/quest_el1_kexec.ko
+          llvm-objdump -h kernel/quest_el1_kexec.ko | grep -E '__versions|\.modinfo|__cfi' || true
+          mkdir -p dist
+          cp kernel/quest_el1_kexec.ko dist/
+          (cd dist && sha256sum quest_el1_kexec.ko | tee quest_el1_kexec.ko.sha256)
+
+      - name: Upload device module
+        uses: actions/upload-artifact@v4
+        with:
+          name: quest_el1_kexec-${{ env.DEVICE_RELEASE }}
+          path: |
+            dist/
+            build.log
+
+  kmi:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev cpio \
+            python3 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+      - name: Cache stock tree and toolchain
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/stock
+            ~/clang
+          key: devstock-${{ env.STOCK_SHA }}-${{ env.CLANG_REV }}-v1
+
+      - name: Fetch stock source and clang
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/stock && cd ~/stock
+          git init -q . && git remote add origin "$STOCK_REPO"
+          git fetch -q --depth 1 origin "$STOCK_SHA" && git checkout -q FETCH_HEAD
+          rm -rf .git
+          mkdir -p ~/clang && cd ~/clang
+          curl -fsSL --retry 3 -o clang.tgz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/$CLANG_REF/$CLANG_REV.tar.gz"
+          tar -xzf clang.tgz && rm clang.tgz
+
+      - name: Compile stock vmlinux objects (no final link)
+        run: |
+          export PATH="$HOME/clang/bin:$PATH"
+          cd ~/stock
+          rm -rf kmi && mkdir kmi
+          cp "$GITHUB_WORKSPACE/$DEVICE_CONFIG" kmi/.config
+          scripts/config --file kmi/.config --set-str LOCALVERSION "-g9cb2f620a9a8" \
+            -d LOCALVERSION_AUTO -d DEBUG_INFO_BTF -d DEBUG_INFO
+          make -s $MAKEFLAGS_K O=kmi olddefconfig
+          make -s $MAKEFLAGS_K O=kmi -j"$(nproc)" prepare
+          # Built-in objects only: their genksyms output (*.o.symversions with
+          # LTO, or __crc_ symbols otherwise) holds the export CRCs.
+          make $MAKEFLAGS_K O=kmi -k -j"$(nproc)" KBUILD_MODULES= \
+            init/ kernel/ mm/ fs/ ipc/ security/ crypto/ block/ lib/ \
+            drivers/ sound/ net/ virt/ certs/ arch/arm64/ 2>&1 | tail -n 200 > kmi-build.log || true
+          tail -n 60 kmi-build.log
+
+      - name: Compare export CRCs with the device
+        run: |
+          python3 - <<'EOF'
+          import os, re, subprocess
+          root = os.path.expanduser('~/stock/kmi')
+          gen = {}
+          for dp, _, fs in os.walk(root):
+              for f in fs:
+                  if f.endswith('.symversions'):
+                      for m in re.finditer(r'(?:__crc_)(\S+)\s*=\s*(0x[0-9a-fA-F]+)', open(os.path.join(dp, f)).read()):
+                          gen[m.group(1)] = int(m.group(2), 16)
+          dev = {}
+          for line in open(os.environ['DEVICE_SYMVERS']):
+              c, n, *_ = line.split('\t'); dev[n] = int(c, 16)
+          same = [n for n in dev if n in gen and gen[n] == dev[n]]
+          diff = [n for n in dev if n in gen and gen[n] != dev[n]]
+          missing = [n for n in dev if n not in gen]
+          print(f'device exports {len(dev)}, generated {len(gen)}, equal {len(same)}, different {len(diff)}, not generated {len(missing)}')
+          with open('kmi-report.txt', 'w') as f:
+              f.write(f'equal {len(same)} different {len(diff)} missing {len(missing)}\n')
+              for n in sorted(diff): f.write(f'DIFF {n} device=0x{dev[n]:08x} stock=0x{gen[n]:08x}\n')
+              for n in sorted(missing): f.write(f'MISSING {n}\n')
+          for n in sorted(diff)[:50]: print('DIFF', n)
+          EOF
+
+      - name: Upload KMI report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-kmi-report
+          path: |
+            kmi-report.txt
+            ~/stock/kmi-build.log
