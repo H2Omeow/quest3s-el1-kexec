@@ -112,7 +112,48 @@ unwind 元数据（`.eh_frame`），不改写 `Image` 或 `vmlinux`。
 vendor 模块（CRC/结构不兼容）。首启用的 initramfs 是完全静态的，不加载任何模块，这正是
 `handoff-init` 存在的意义：先证明内核能跑到用户态，再谈 Android。
 
-## 7. 检查清单（上机前）
+## 7. 与原厂同版本的重建（推荐路径）
+
+`va48-quest3s` 分支基于 5.10.246。但设备的 vendor 模块是针对 **5.10.240** 编译的：
+5.10.241..246 只要改动了任何一个导出函数的签名/结构布局，`Module.symvers` 的 CRC 就会变，
+vendor_dlkm 里的模块就会被 modpost 拒绝。所以更稳的做法是**回到原厂源码快照**重建：
+
+```
+公开原厂源码 729ec6c4 (5.10.240)
+        + handoff/ci 的功能补丁（VA48、KSU、NTSync、quest_handoff）
+        + 设备 config + 特性 fragment + 身份 fragment
+        = uname 与原厂完全一致，且 KMI 与 vendor 模块一致
+```
+
+对应 workflow：fork 仓库的 `Stock 5.10.240 rebuild with VA48, NTSync, KSU and Droidspaces`
+（`.github/workflows/stock-va48-build.yml`）。
+
+关键点：
+
+- **身份**：`CONFIG_LOCALVERSION="-g9cb2f620a9a8"` + 关 `LOCALVERSION_AUTO`
+  （公开快照是 `729ec6c4`，若开 AUTO 会变成 `-g729ec6c4…`），
+  `KBUILD_BUILD_VERSION=1`，`KBUILD_BUILD_TIMESTAMP="Thu Jul 2 23:18:32 PDT 2026"`
+  —— `scripts/mkcompile_h` 对这个变量是**原样使用**，不做日期解析。
+  结果 `uname -a` 为：
+
+  ```
+  Linux localhost 5.10.240-g9cb2f620a9a8 #1 SMP PREEMPT Thu Jul 2 23:18:32 PDT 2026 aarch64 Toybox
+  ```
+
+  构建后用 `strings Image | grep -F '5.10.240-g9cb2f620a9a8 #1 SMP PREEMPT Thu Jul 2 23:18:32 PDT 2026'`
+  硬校验。
+- **CFI/LTO 不能关**：`CONFIG_CFI_CLANG` 依赖 full LTO，而 vendor 模块是 CFI 编译的，
+  内核若没有 `__cfi_*` 运行时，模块会以 `unknown symbol` 拒绝加载——那等于白改版本号。
+  因此 `stock-240.fragment` 显式把 `LTO_CLANG_FULL=y`、`LTO_CLANG_THIN` 关掉，
+  覆盖 `handoff-target.fragment` 的 ThinLTO 设定。代价是链接很慢，workflow 里给 runner
+  单独挂 8 GiB swapfile。
+- **补丁应用**：`git diff 043e6bcc handoff/ci` 打到原厂树上，`git apply --3way`，
+  然后检查是否有残留冲突标记；`features.patch` 同时包含 VA48 核心（约 250 行）、
+  `drivers/kernelsu`、`fs/ntsync`、`drivers/misc/quest_handoff.c`。
+- 产物：`Image`、`Image.el1`、`Module.symvers`、`System.map`、`config-used`、
+  `kernel.release`、`dist-modules.tgz`。
+
+## 8. 检查清单（上机前）
 
 - [ ] `kernel.release` 是 `5.10.246-quest3s-va48`
 - [ ] `Image.el1` 头里 `image_size` ≥ 文件大小、`text_offset = 0x80000`、flags 为 LE + 4K

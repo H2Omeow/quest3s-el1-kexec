@@ -1,4 +1,4 @@
-# Quest 3S EL1 热切换
+﻿# Quest 3S EL1 热切换
 
 在 Quest 3S 的原厂 Linux 内核里加载一个模块，把控制权交给内存中的自定义内核——不写分区、
 不需要 `CONFIG_KEXEC`、不需要解锁 BL。仓库包含两部分：内核模块（自带 kexec 装载核心与
@@ -39,7 +39,7 @@
 | `quest_el1_kexec.ko` | `Device-ABI module build` → job `loader` | 按设备 ABI 编译，vermagic `5.10.240-g9cb2f620a9a8` |
 | `quest-el1` | `Host checks` → job `cli-arm64` | 静态 aarch64 规划器 |
 | `initramfs.cpio.gz` | `Host checks` → job `cli-arm64` | 首启 `/init`：只写 pmsg，然后回重启 |
-| `Image.el1` | fork 仓库 `Handoff target build` | 目标内核（VA48 / NTSync / BakaSU / Droidspaces） |
+| `Image.el1` | fork 仓库 `Stock 5.10.240 rebuild`（推荐）或 `Handoff target build` | 目标内核：与原厂同版本 5.10.240 + VA48 / NTSync / KSU / Droidspaces，uname 与原厂一致 |
 
 打包成一个目录（顺便生成 `manifest.json` 与 `SHA256SUMS`）：
 
