@@ -42,11 +42,16 @@ jobs:
           make -C user CC=aarch64-linux-gnu-gcc \
             CFLAGS='-O2 -Wall -Wextra -Werror -static' handoff-init
           file user/handoff-init
-          scripts/build-initramfs.sh user/handoff-init build/bin/handoff-initramfs.cpio.gz
-          sha256sum build/bin/handoff-initramfs.cpio.gz
+          scripts/build-initramfs.sh user/handoff-init build/bin/initramfs.cpio.gz
+          sha256sum build/bin/initramfs.cpio.gz
       - uses: actions/upload-artifact@v4
         with:
-          name: quest-el1-aarch64
-          path: |
-            build/bin/quest-el1-aarch64
-            build/bin/handoff-initramfs.cpio.gz
+          name: quest-el1
+          path: build/bin/quest-el1
+      # A separate artifact on purpose: the initramfs is what makes the target
+      # kernel able to reach userspace at all (the device cmdline says
+      # init=/init), so it must be impossible to miss when downloading.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: initramfs
+          path: build/bin/initramfs.cpio.gz

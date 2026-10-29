@@ -32,23 +32,34 @@
 
 ### 2.1 收集产物
 
-全部由 GitHub Actions 产出，本地不需要工具链：
+**最省事：直接下发行包。** [Releases → `bringup-1`](https://github.com/H2Omeow/quest3s-el1-kexec/releases/tag/bringup-1)
+里就是下面这 5 个文件（外加 `SHA256SUMS`、`manifest.json`），**文件名与 `bringup.sh` 里写死的
+路径一模一样**，解压到 `/data/local/tmp/q3s/` 就能跑，不用改任何变量：
+
+```powershell
+New-Item -ItemType Directory -Force $env:TEMP\bringup | Out-Null
+Invoke-WebRequest -UseBasicParsing -OutFile $env:TEMP\bringup\quest_el1_kexec.ko `
+  https://github.com/H2Omeow/quest3s-el1-kexec/releases/download/bringup-1/quest_el1_kexec.ko
+# quest-el1 / Image.el1 / initramfs.cpio.gz / bringup.sh / SHA256SUMS 同理换文件名
+```
+
+也可以从 workflow artifact 拼（本轮构建的对应关系）：
 
 | 文件 | 来自哪个 workflow | 说明 |
 | --- | --- | --- |
 | `quest_el1_kexec.ko` | `Device-ABI module build` → job `loader` | 按设备 ABI 编译，vermagic `5.10.240-g9cb2f620a9a8` |
-| `quest-el1` | `Host checks` → job `cli-arm64` | 静态 aarch64 规划器 |
-| `initramfs.cpio.gz` | `Host checks` → job `cli-arm64` | 首启 `/init`：只写 pmsg，然后回重启 |
-| `Image.el1` | fork 仓库 `Stock 5.10.240 rebuild`（推荐）或 `Handoff target build` | 目标内核：与原厂同版本 5.10.240 + VA48 / NTSync / KSU / Droidspaces，uname 与原厂一致 |
+| `quest-el1` | `Host checks` → artifact `quest-el1` | 静态 aarch64 规划器 |
+| `initramfs.cpio.gz` | `Host checks` → artifact `initramfs` | **首启必需**：设备 bootargs 是 `init=/init`，缺了它目标内核会 panic |
+| `Image.el1` | fork 仓库 `Stock 5.10.240 rebuild`（推荐）或 `Handoff target build` | 目标内核：与原厂同版本 5.10.240 + VA48 / NTSync / BakaSU / Droidspaces，uname 与原厂一致 |
 
 打包成一个目录（顺便生成 `manifest.json` 与 `SHA256SUMS`）：
 
 ```bash
 python3 scripts/device-package.py --out out/device \
     --module dist/quest_el1_kexec.ko \
-    --tool build/bin/quest-el1-aarch64 \
+    --tool build/bin/quest-el1 \
     --image Image.el1 \
-    --initramfs build/bin/handoff-initramfs.cpio.gz \
+    --initramfs build/bin/initramfs.cpio.gz \
     --kernel-release out/include/config/kernel.release
 ```
 

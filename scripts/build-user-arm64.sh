@@ -9,7 +9,7 @@ fi
 task_root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 task_dtc=$(realpath -- "$1")
 task_libfdt="$task_dtc/libfdt"
-task_output="$task_root/build/bin/quest-el1-aarch64"
+task_output="$task_root/build/bin/quest-el1"
 [[ -f $task_libfdt/fdt_check.c && -f $task_libfdt/libfdt.h ]] || {
     echo "Needs a complete libfdt source including fdt_check.c (tested: dtc 1.7.2)." >&2
     exit 1

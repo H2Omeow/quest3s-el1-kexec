@@ -5,20 +5,28 @@
 
 ## 0. 需要准备的文件
 
-CI 产出（GitHub Actions artifact）拼成一个包：
+最省事的办法：直接下发行包（GitHub Releases → `bringup-1`），里面就是下面这 5 个文件加
+`SHA256SUMS`、`manifest.json`，文件名与本文档、与 `bringup.sh` 里的路径**完全一致**：
+
+<https://github.com/H2Omeow/quest3s-el1-kexec/releases/tag/bringup-1>
 
 | 文件 | 来源 | 说明 |
 | --- | --- | --- |
-| `quest_el1_kexec.ko` | loader 仓库 `Device-ABI module build` | 按设备 `config`/`symvers`/clang r450784e 编译，vermagic `5.10.240-g9cb2f620a9a8` |
-| `quest-el1` | `Host checks` → `quest-el1-aarch64` | 静态 aarch64 规划器 |
-| `Image.el1` | fork 仓库 `Handoff target build` | 目标内核（VA48/NTSync/BakaSU/Droidspaces） |
-| `initramfs.cpio.gz` | `Host checks` → `quest-el1-aarch64` | 首启 `/init`，只写 pmsg 后回重启 |
-| `bringup.sh` | 本仓库 `scripts/bringup.sh` | 设备端分阶段脚本 |
+| `quest_el1_kexec.ko` | Release / loader 仓库 `Device-ABI module build` | 按设备 `config`/`symvers`/clang r450784e 编译，vermagic `5.10.240-g9cb2f620a9a8` |
+| `quest-el1` | Release / `Host checks` → `quest-el1` | 静态 aarch64 规划器 |
+| `Image.el1` | Release / fork 仓库 `Stock 5.10.240 rebuild` | 目标内核（VA48/NTSync/BakaSU/Droidspaces） |
+| `initramfs.cpio.gz` | Release / `Host checks` → `initramfs` | **首启必需**：设备的 bootargs 是 `init=/init`，少了它目标内核直接 panic |
+| `bringup.sh` | Release / 本仓库 `scripts/bringup.sh` | 设备端分阶段脚本 |
+
+`bringup.sh` 里写死的默认路径就是 `/data/local/tmp/q3s/` 下的这 5 个名字，所以只要这 5 个
+文件都在这个目录里，就不需要任何环境变量。少一个它会立刻报 `missing ...` 而不是悄悄跳过。
+
+自己打包的话：
 
 ```bash
 python3 scripts/device-package.py --out out/device \
-    --module dist/quest_el1_kexec.ko --tool build/bin/quest-el1-aarch64 \
-    --image Image.el1 --initramfs build/bin/handoff-initramfs.cpio.gz \
+    --module dist/quest_el1_kexec.ko --tool build/bin/quest-el1 \
+    --image Image.el1 --initramfs build/bin/initramfs.cpio.gz \
     --kernel-release out/include/config/kernel.release
 ```
 
