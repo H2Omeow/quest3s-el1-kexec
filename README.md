@@ -32,16 +32,20 @@
 
 ### 2.1 收集产物
 
-**最省事：直接下发行包。** [Releases → `bringup-1`](https://github.com/H2Omeow/quest3s-el1-kexec/releases/tag/bringup-1)
-里就是下面这 5 个文件（外加 `SHA256SUMS`、`manifest.json`），**文件名与 `bringup.sh` 里写死的
-路径一模一样**，解压到 `/data/local/tmp/q3s/` 就能跑，不用改任何变量：
+**最省事：一条命令把发行包拉下来并校验。** [Releases → `bringup-1`](https://github.com/H2Omeow/quest3s-el1-kexec/releases/tag/bringup-1)
+里就是这 5 个文件（外加 `SHA256SUMS`、`manifest.json`），**文件名与 `bringup.sh` 里写死的
+路径一模一样**，直接推到 `/data/local/tmp/q3s/` 就能跑，不用改任何变量：
 
 ```powershell
-New-Item -ItemType Directory -Force $env:TEMP\bringup | Out-Null
-Invoke-WebRequest -UseBasicParsing -OutFile $env:TEMP\bringup\quest_el1_kexec.ko `
-  https://github.com/H2Omeow/quest3s-el1-kexec/releases/download/bringup-1/quest_el1_kexec.ko
-# quest-el1 / Image.el1 / initramfs.cpio.gz / bringup.sh / SHA256SUMS 同理换文件名
+powershell -ExecutionPolicy Bypass -File scripts\fetch-bringup.ps1
 ```
+
+```bash
+scripts/fetch-bringup.sh          # Linux / macOS / Termux
+```
+
+脚本会下载全部 7 个文件、按 `SHA256SUMS` 逐个校验，少一个或哈希不对就直接报错退出 ——
+这是唯一能防止“又漏掉一个文件”的办法。
 
 也可以从 workflow artifact 拼（本轮构建的对应关系）：
 

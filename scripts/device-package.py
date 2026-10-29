@@ -37,7 +37,7 @@ def copy(src, dst, mode=None):
     shutil.copyfile(src, dst)
     if mode is not None:
         os.chmod(dst, mode)
-    return {"source": os.path.abspath(src), "name": os.path.basename(dst),
+    return {"source": os.path.basename(src), "name": os.path.basename(dst),
             "size": os.path.getsize(dst), "sha256": sha256(dst)}
 
 

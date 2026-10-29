@@ -20,7 +20,8 @@ jobs:
       - name: Check scripts
         run: |
           bash -n scripts/build-module.sh scripts/build-user-arm64.sh \
-                 scripts/build-initramfs.sh scripts/bringup.sh
+                 scripts/build-initramfs.sh scripts/bringup.sh \
+                 scripts/fetch-bringup.sh
           python3 -m py_compile scripts/prepare-image.py tests/test_*.py \
                  scripts/stock-symvers.py scripts/check-module-abi.py \
                  scripts/device-package.py

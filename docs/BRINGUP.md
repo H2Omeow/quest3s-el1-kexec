@@ -10,6 +10,16 @@
 
 <https://github.com/H2Omeow/quest3s-el1-kexec/releases/tag/bringup-1>
 
+用脚本一次拉全并逐个校验（少文件或哈希不对会直接失败）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\fetch-bringup.ps1
+```
+
+```bash
+scripts/fetch-bringup.sh
+```
+
 | 文件 | 来源 | 说明 |
 | --- | --- | --- |
 | `quest_el1_kexec.ko` | Release / loader 仓库 `Device-ABI module build` | 按设备 `config`/`symvers`/clang r450784e 编译，vermagic `5.10.240-g9cb2f620a9a8` |
