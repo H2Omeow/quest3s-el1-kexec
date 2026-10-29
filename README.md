@@ -282,6 +282,7 @@ scripts/check-module-abi.py --symvers device/Module.symvers \
 ## 9. 相关文档
 
 - [docs/BRINGUP.md](docs/BRINGUP.md)：上机逐级教程与排障顺序
+- [docs/TARGET.md](docs/TARGET.md)：目标内核的配置派生、构建与产物
 - [DEVICE_LADDER.md](DEVICE_LADDER.md)：验证阶梯（只读 → 可逆 → 计划 → 最小目标）
 - [VALIDATION.md](VALIDATION.md)：主机端验证与其边界
 - [TEE_HANDOFF.md](TEE_HANDOFF.md)：TEE 现状与未实现部分
