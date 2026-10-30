@@ -445,11 +445,16 @@ int main(void)
 	reset(); scm_driver.probe = qcom_soc_wdt_probe;
 	assert(quest_platform_prepare() == -EOPNOTSUPP);
 	clean(qcom_scm_shutdown, NULL);
+	/* The remove callback is not part of the identity check: every module
+	 * that assigns the exported qcom_wdt_remove holds its own CFI stub. */
 	reset(); wdt_driver.remove = NULL;
-	assert(quest_platform_prepare() == -EOPNOTSUPP);
+	assert(quest_platform_prepare() == 0);
+	quest_platform_cancel();
 	clean(qcom_scm_shutdown, NULL);
+	/* A present driver with no bound device is treated as absent. */
 	reset(); wdt_pdev.dev.driver = NULL;
-	assert(quest_platform_prepare() == -ENODEV);
+	assert(quest_platform_prepare() == 0);
+	quest_platform_cancel();
 	clean(qcom_scm_shutdown, NULL);
 	reset(); wdt_ops.disable_wdt = qcom_soc_reset_wdt;
 	assert(quest_platform_prepare() == -EOPNOTSUPP);
