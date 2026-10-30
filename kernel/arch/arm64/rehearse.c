@@ -74,17 +74,24 @@ static int quest_rehearse_cpu(void *data)
 	unsigned long flags;
 	u64 t0;
 
+	pr_info("cpu%d: installing private idmap for %pa\n",
+		smp_processor_id(), &run->code);
 	flags = local_daif_save();
 	quest_idmap_save(&saved);
 	run->sctlr_before = read_sysreg(sctlr_el1);
 	asm volatile("dsb sy\n\tic iallu\n\tdsb sy\n\tisb" ::: "memory");
 	quest_idmap_install(run->code);
+	pr_info("cpu%d: idmap installed, entering blob\n", smp_processor_id());
 	t0 = ktime_get_mono_fast_ns();
 	run->cookie = quest_rehearse_enter(run->code, run->head, run->ret_stub,
 					   QUEST_REHEARSE_COOKIE);
 	run->ns = ktime_get_mono_fast_ns() - t0;
+	pr_info("cpu%d: blob returned x0=%#llx\n", smp_processor_id(),
+		run->cookie);
 	quest_idmap_restore(&saved);
 	run->sctlr_after = read_sysreg(sctlr_el1);
+	pr_info("cpu%d: idmap restored sctlr=%#llx\n", smp_processor_id(),
+		run->sctlr_after);
 	local_daif_restore(flags);
 	return 0;
 }
@@ -210,6 +217,8 @@ static int quest_rehearse_pages(const phys_addr_t *src, unsigned long nr,
 	run.ret_stub = run.code + quest_return_offset();
 	run.head = quest_rehearse_build(&b, src);
 
+	pr_info("mmu rehearsal: %lu page(s) code=%pa head=%#lx ret_stub=%pa\n",
+		nr, &run.code, run.head, &run.ret_stub);
 	ret = stop_machine(quest_rehearse_cpu, &run, NULL);
 	if (ret)
 		goto out;

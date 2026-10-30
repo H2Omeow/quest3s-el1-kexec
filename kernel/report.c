@@ -96,12 +96,19 @@ int quest_report_build(struct quest_report *r)
 	if (!r->buf)
 		return -ENOMEM;
 	r->cap = QUEST_REPORT_CAP;
+	pr_info("report: cpu\n");
 	quest_report_cpu(r);
+	pr_info("report: platform\n");
 	quest_platform_report(r);
+	pr_info("report: wdt\n");
 	quest_wdt_report(r);
+	pr_info("report: rproc\n");
 	quest_rproc_report(r);
+	pr_info("report: rmem\n");
 	quest_report_rmem(r);
+	pr_info("report: secure\n");
 	quest_secure_report(r);
+	pr_info("report: rehearse\n");
 	quest_report_rehearsal(r);
 	/* A missing final line tells the reader the buffer overflowed. */
 	quest_report_add(r, "end\n");

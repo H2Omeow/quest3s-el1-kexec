@@ -39,6 +39,9 @@
 #include "platform_wdt.h"
 #include "report.h"
 
+/* Implemented in kexec_drv.c; empty unless trace_path= was supplied. */
+void quest_trace(const char *fmt, ...);
+
 #define QUEST_WDT_ENABLE_OFFSET 0x08
 #define QUEST_WDT_LAST_OFFSET   0x14
 #define QUEST_WDT_ENABLE_BITS   0x03
@@ -117,11 +120,19 @@ out:
 	return ret;
 }
 
-/* Caller holds the stock module_mutex until the owner is pinned. */
+/*
+ * Caller holds the stock module_mutex until the owner is pinned.
+ *
+ * The remove callback is not compared: qcom_wdt_remove is exported by
+ * qcom_wdt_core, so every driver that assigns it holds its own same-named CFI
+ * jump-table stub, and kallsyms_lookup_name() can only ever return one of them.
+ * The driver object address, the probe function and the match table already
+ * identify the stock driver unambiguously.
+ */
 static int quest_get_binding(struct quest_platform_binding *binding,
 		const char *driver_name, const char *object_name,
-		const char *probe_name, const char *remove_name,
-		const char *shutdown_name, const char *match_name)
+		const char *probe_name, const char *shutdown_name,
+		const char *match_name)
 {
 	struct device_driver *driver;
 	struct platform_driver *platform;
@@ -140,8 +151,6 @@ static int quest_get_binding(struct quest_platform_binding *binding,
 	    strcmp(driver->name, driver_name) ||
 	    !quest_function_is(driver->shutdown, "platform_drv_shutdown") ||
 	    !quest_function_is(platform->probe, probe_name) ||
-	    (remove_name ? !quest_function_is(platform->remove, remove_name) :
-			   platform->remove != NULL) ||
 	    (shutdown_name ? !quest_function_is(platform->shutdown, shutdown_name) :
 			     platform->shutdown != NULL) ||
 	    (unsigned long)driver->of_match_table != quest_lookup_name(match_name)) {
@@ -151,8 +160,16 @@ static int quest_get_binding(struct quest_platform_binding *binding,
 	}
 	binding->original_shutdown = platform->shutdown;
 	ret = driver_for_each_device(driver, NULL, binding, quest_bound_device);
-	if (!ret && !binding->dev)
-		ret = -ENODEV;
+	if (!ret && !binding->dev) {
+		/*
+		 * The driver exists but nothing is bound to it, so no watchdog
+		 * instance is running under it (probes are blocked here, this
+		 * cannot change). Drop the reference and treat it as absent.
+		 */
+		module_put(binding->owner);
+		memset(binding, 0, sizeof(*binding));
+		return 0;
+	}
 	if (ret)
 		pr_err("%s must have exactly one supported platform device\n",
 		       driver_name);
@@ -201,6 +218,7 @@ static void quest_scm_warm_shutdown(struct platform_device *pdev)
 	}
 	WRITE_ONCE(scm_binding.shutdown_seen, true);
 	pr_info("Preserving SCM/PMIC state for EL1 handoff\n");
+	quest_trace("shutdown: scm hook done");
 }
 
 #if IS_ENABLED(CONFIG_QCOM_WDT_CORE)
@@ -210,18 +228,21 @@ static void __nocfi quest_watchdog_shutdown(struct platform_device *pdev)
 	struct msm_watchdog_data *wd = watchdog_data;
 	int ret;
 
+	quest_trace("shutdown: msm watchdog hook enter");
 	if (&pdev->dev != wdt_binding.dev ||
 	    pdev->dev.driver != &wdt_binding.driver->driver ||
 	    dev_get_drvdata(&pdev->dev) != wd || wd->ops != watchdog_ops) {
 		WRITE_ONCE(shutdown_error, -ENODEV);
 		return;
 	}
+	quest_trace("shutdown: secure watchdog deactivate begin");
 	ret = secure_watchdog_disable();
 	if (ret) {
 		pr_emerg("Secure watchdog deactivation failed: %d; no handoff\n", ret);
 		WRITE_ONCE(shutdown_error, ret);
 		return;
 	}
+	quest_trace("shutdown: secure watchdog deactivated");
 	/* The panic-only driver path never initialized locks or timers. */
 	if (wd->watchdog_task) {
 		mutex_lock(&wd->disable_lock);
@@ -232,6 +253,7 @@ static void __nocfi quest_watchdog_shutdown(struct platform_device *pdev)
 			return;
 		}
 	}
+	quest_trace("shutdown: pet suspended");
 	/* suspend_late deliberately leaves wakeup watchdogs enabled. */
 	ret = wd->ops->disable_wdt(wd);
 	WRITE_ONCE(wd->enabled, false);
@@ -246,6 +268,7 @@ static void __nocfi quest_watchdog_shutdown(struct platform_device *pdev)
 	}
 	WRITE_ONCE(wdt_binding.shutdown_seen, true);
 	pr_info("Secure and app watchdogs disabled for EL1 handoff\n");
+	quest_trace("shutdown: msm watchdog hook done");
 }
 
 static int quest_check_watchdog(void)
@@ -293,6 +316,7 @@ static void quest_gh_watchdog_shutdown(struct platform_device *pdev)
 {
 	int ret;
 
+	quest_trace("shutdown: gh watchdog hook enter");
 	if (&pdev->dev != gh_binding.dev ||
 	    pdev->dev.driver != &gh_binding.driver->driver ||
 	    dev_get_drvdata(&pdev->dev) != gh_watchdog_data) {
@@ -307,6 +331,7 @@ static void quest_gh_watchdog_shutdown(struct platform_device *pdev)
 	}
 	WRITE_ONCE(gh_binding.shutdown_seen, true);
 	pr_info("Gunyah virtual watchdog disabled for EL1 handoff\n");
+	quest_trace("shutdown: gh watchdog hook done");
 }
 
 static int quest_check_gh_watchdog(void)
@@ -441,18 +466,16 @@ int quest_platform_prepare(void)
 		ret = quest_reject_tee_driver("smcinvoke");
 	if (!ret)
 		ret = quest_get_binding(&scm_binding, "qcom_scm", "qcom_scm_driver",
-				"qcom_scm_probe", NULL, "qcom_scm_shutdown",
+				"qcom_scm_probe", "qcom_scm_shutdown",
 				"qcom_scm_dt_match");
 	if (!ret)
 		ret = quest_get_binding(&wdt_binding, "msm_watchdog", "qcom_soc_wdt_driver",
-				"qcom_soc_wdt_probe", "qcom_wdt_remove", NULL,
-				"qcom_soc_match_table");
+				"qcom_soc_wdt_probe", NULL, "qcom_soc_match_table");
 	if (!ret)
 		ret = quest_check_watchdog();
 	if (!ret)
 		ret = quest_get_binding(&gh_binding, "gh-watchdog", "gh_wdt_driver",
-				"gh_wdt_probe", "qcom_wdt_remove", NULL,
-				"gh_wdt_match_table");
+				"gh_wdt_probe", NULL, "gh_wdt_match_table");
 	if (!ret)
 		ret = quest_check_gh_watchdog();
 	if (!ret)
@@ -608,18 +631,16 @@ int quest_platform_rehearse_watchdog(unsigned int *stopped)
 	}
 	mutex_lock(stock_module_mutex);
 	ret = quest_get_binding(&scm_binding, "qcom_scm", "qcom_scm_driver",
-			"qcom_scm_probe", NULL, "qcom_scm_shutdown",
+			"qcom_scm_probe", "qcom_scm_shutdown",
 			"qcom_scm_dt_match");
 	if (!ret)
 		ret = quest_get_binding(&wdt_binding, "msm_watchdog", "qcom_soc_wdt_driver",
-				"qcom_soc_wdt_probe", "qcom_wdt_remove", NULL,
-				"qcom_soc_match_table");
+				"qcom_soc_wdt_probe", NULL, "qcom_soc_match_table");
 	if (!ret)
 		ret = quest_check_watchdog();
 	if (!ret)
 		ret = quest_get_binding(&gh_binding, "gh-watchdog", "gh_wdt_driver",
-				"gh_wdt_probe", "qcom_wdt_remove", NULL,
-				"gh_wdt_match_table");
+				"gh_wdt_probe", NULL, "gh_wdt_match_table");
 	if (!ret)
 		ret = quest_check_gh_watchdog();
 	if (!ret)

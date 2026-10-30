@@ -351,8 +351,14 @@ static int append_fdt_reg(const void *fdt, int node, const char *property,
 		    read_cells(reg + offset / 4, addr_cells, &region.start) ||
 		    read_cells(reg + offset / 4 + addr_cells, size_cells,
 			       &region.size) ||
-		    !region.size || region.start > UINT64_MAX - region.size)
+		    region.start > UINT64_MAX - region.size)
 			return -EINVAL;
+		/* Bootloaders leave zero-sized placeholders (for example memory
+		 * regions removed after training). They reserve nothing, so skip
+		 * them instead of rejecting the whole device DTB.
+		 */
+		if (!region.size)
+			continue;
 		regions[(*count)++] = region;
 	}
 	return 0;
