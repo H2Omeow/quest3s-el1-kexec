@@ -2,22 +2,25 @@
 
 目标：用尽量少的头显会话拿到决定性信息，并把不可逆的 `exec` 推迟到所有可逆步骤都通过之后。每一级只在上一级结果完全符合预期时才进入；任何一级失败，都先把输出带回主机分析，不要在设备上反复试。
 
-所有命令都以 root 在头显上运行。`quest-el1` 指 CI 产物 `quest-el1-aarch64`（静态链接，不依赖设备 libc）。
+> **当前验证进度**：本阶梯的第 0 级至第 4 级已在 Quest 3S 原厂 `5.10.240-g9cb2f620a9a8` 内核上全部验证通过，成功热切换至自编译 `5.10.240` 目标内核（含 VA48 / NTSync / BakaSU / Droidspaces 扩展功能）。后续适配新版本原厂固件或新目标内核时，请继续按此阶梯逐级验证。
+
+所有命令都以 root 在头显上运行。`quest-el1` 指 CI 产物 `quest-el1-aarch64`（静态链接，不依赖设备 libc），一键分阶段脚本见 [`scripts/bringup.sh`](scripts/bringup.sh) 与 [docs/BRINGUP.md](docs/BRINGUP.md)。
 
 ## 第 0 级：主机（无需设备）
 
 CI 已覆盖：
 
-- 模块对 stock `729ec6c` + `vendor/oculus_anorak_defconfig`（VA39、三级页表、CFI、Full LTO、SCS、MODVERSIONS）零警告编译和 LTO 链接；
+- **真机 ABI 模块构建（`Device-ABI module build`）**：基于 `device/stock-5.10.240-g9cb2f620a9a8.config`、`device/stock-5.10.240-g9cb2f620a9a8.symvers` 与 clang `r450784e` 生成可加载 `.ko` 并通过 `check-module-abi.py` 全量 CRC 校验；
+- **公开源码候选检查（`Stock-tree module build`）**：对 stock `729ec6c` + `vendor/oculus_anorak_defconfig`（VA39、三级页表、CFI、Full LTO、SCS、MODVERSIONS）零警告编译和 LTO 链接；
 - planner 及 dump-dt、report 解析、动态保留区固定、no-map 合并的主机测试；
 - 实际生产函数注入的 EXEC 控制流、平台回滚、兼容绑定 harness；
-- ARM64 静态 CLI 构建。
+- ARM64 静态 CLI 与首启 `initramfs.cpio.gz` 构建。
 
-候选编译不等于设备 ABI。第 1 级之前仍需要与设备固件对应的 `Module.symvers`（或从设备 `.ko` 提取 CRC）以生成可加载 `.ko`。
+> 注：对于 `5.10.240-g9cb2f620a9a8` 固件，仓库已内置完整的 `.config` 与 `Module.symvers`；若设备升级到其他固件版本，进入第 1 级前需先用 `scripts/stock-symvers.py` 从对应 `boot.img` 提取符号表并重新编译模块。
 
 ## 第 1 级：只读采集（一次会话，零风险）
 
-模块加载本身不改变任何设备状态；`read()` 报告和 `dump-dt` 只读。
+模块加载本身不改变任何设备状态；`read()` 报告和 `dump-dt` 只读（对应 `bringup.sh stage1`）。
 
 ```sh
 insmod quest_el1_kexec.ko
@@ -42,7 +45,7 @@ dmesg > /data/local/tmp/q3s-dmesg.txt
 | `secure ...` / `secure_summary` | HLOS 已移交给安全 VM 的页（`page->private == 0xEEEEEEEE`），合并为区间 | `overflow` 时 planner 拒绝使用该报告 |
 | `dmabuf_summary` / `dmabuf_shared` | 共享给其他 VM 的 mem-buf 缓冲 | 非零时目标内核接管前这些缓冲仍被其他 VM 使用 |
 
-把以上文件全部带回主机；之后的地址计划只用这些真实数据，不用 DTS 推算。
+之后的地址计划只用这些真实数据，不用静态 DTS 推算。
 
 ## 第 2 级：可逆演练（每项可单独执行）
 
@@ -67,16 +70,19 @@ quest-el1 rehearse --steps rproc
 
 ## 第 3 级：生成真实计划并演练完整复制
 
-在主机或设备上用第 1 级数据生成计划。`--report` 会把 DTB 中 `size`-only 的动态保留区固定到当前内核的实际地址（包括 `ramoops_region`，使目标内核和 warm reset 后都能从同一地址取回 pstore 日志），并把 secure 区间加成 `no-map` 节点：
+在主机或设备上用第 1 级数据生成计划（对应 `bringup.sh stage2` 与 `stage3`）。`--report` 会把 DTB 中 `size`-only 的动态保留区固定到当前内核的实际地址（包括 `ramoops_region`，使目标内核和 warm reset 后都能从同一地址取回 pstore 日志），并把 secure 区间加成 `no-map` 节点：
 
 ```sh
 quest-el1 plan \
   --image Image.el1 --dtb q3s-live.dtb \
   --report q3s-report.txt --iomem q3s-iomem.txt \
   --kernel-base "$KERNEL_PHYS" --dtb-addr "$DTB_PHYS" \
+  --initrd initramfs.cpio.gz --initrd-addr "$INITRD_PHYS" \
   --disable /soc/qseecom@c1700000 \
   --bootargs '... nokaslr ramoops.mem_address=... '
 ```
+
+在 `5.10.240-g9cb2f620a9a8` 真机上已验证通过的默认物理地址为：`KERNEL_PHYS=0xa8000000`、`INITRD_PHYS=0xaca00000`、`DTB_PHYS=0xacc00000`。
 
 `plan` 会在改写后的 DTB 上重新检查全部内存冲突，即检查的就是目标内核实际收到的 DTB。确认无误后：
 
@@ -89,16 +95,17 @@ quest-el1 rehearse --steps copy
 
 ## 第 4 级：EXEC 到最小目标
 
-第一次 EXEC 只用最小目标：BusyBox initramfs、低地址内存、目标 DTB 中禁用 qseecom、`nokaslr`、固定 ramoops。
+第一次 EXEC 使用最小 initramfs 目标：低地址内存、目标 DTB 中禁用 qseecom、`nokaslr`、固定 ramoops（对应 `bringup.sh stage4`）。
 
 ```sh
 quest-el1 exec --yes
 ```
 
-预期失败模式与诊断：
+结果判定与诊断：
 
-- 立即重启：查看下一次启动的 PMIC 上电原因与 pstore（ramoops 已固定到同一地址）。
-- 黑屏无重启：说明 watchdog 已被停用而目标未起来；目标内核入口应尽早写日志到 ramoops。
+- **切换成功（已在原厂 `5.10.240` → 扩展版 `5.10.240` 实机验证）**：首启 `/init` 向 pmsg 写入 `quest-handoff: init reached userspace` 及内核版本信息后主动触发重启，原厂系统重启后可在 `/sys/fs/pstore/pmsg-ramoops-0` 与 `console-ramoops-0` 读取完整日志。
+- **立即重启且无目标 pstore**：查看下一次启动的 PMIC 上电原因与 pstore。
+- **黑屏无重启**：说明 watchdog 已被停用而目标未走到 reboot；检查目标内核早期 console/ramoops 初始化。
 
 完整 Android 需要目标内核侧的接管补丁（QMP/AOP 通道、GIC 残留中断清理、SPMI 残留中断、显示 splash 区等），这些不在本模块范围内。
 
