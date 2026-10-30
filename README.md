@@ -4,9 +4,12 @@
 不需要 `CONFIG_KEXEC`、不需要解锁 BL。仓库包含两部分：内核模块（自带 kexec 装载核心与
 可逆自检）和静态 aarch64 用户态规划器 `quest-el1`。
 
-> **状态**：模块已能针对本机真实 ABI 构建（设备 `config` + 从 `boot_a.img` 恢复的
-> `Module.symvers` + 设备同代 clang r450784e），modpost 与 CRC 校验全部通过；**尚未在
-> Quest 3S 上执行过切换**。BL 锁死时 kexec 是运行自定义内核的唯一途径，卡死可断电恢复。
+> **状态**：**已在 Quest 3S（原厂 `5.10.240-g9cb2f620a9a8`）真机上验证热切换成功。**
+> 模块针对本机真实 ABI 构建（设备 `config` + 从 `boot_a.img` 恢复的 `Module.symvers` +
+> 设备同代 clang r450784e），modpost 与 CRC 校验全部通过；实机已完成 Stage 1–4 全流程，
+> 成功从原厂内核热切换到同为 `5.10.240` 版本号的自编译目标内核（已合入 VA48 / NTSync /
+> BakaSU / Droidspaces 扩展功能），并进入用户态 `/init` 落盘 `pstore` 日志。
+> BL 锁死时 kexec 是运行自定义内核的唯一途径，卡死可断电恢复。
 
 ---
 
@@ -39,7 +42,7 @@
 | `quest_el1_kexec.ko` | `Device-ABI module build` → job `loader` | 按设备 ABI 编译，vermagic `5.10.240-g9cb2f620a9a8` |
 | `quest-el1` | `Host checks` → job `cli-arm64` | 静态 aarch64 规划器 |
 | `initramfs.cpio.gz` | `Host checks` → job `cli-arm64` | 首启 `/init`：只写 pmsg，然后回重启 |
-| `Image.el1` | fork 仓库 `Handoff target build` | 目标内核（VA48 / NTSync / BakaSU / Droidspaces） |
+| `Image.el1` | fork 仓库 `Handoff target build` | 目标内核（`5.10.240`，含 VA48 / NTSync / BakaSU / Droidspaces） |
 
 打包成一个目录（顺便生成 `manifest.json` 与 `SHA256SUMS`）：
 
@@ -88,7 +91,7 @@ adb shell su -c 'sh /data/local/tmp/q3s/bringup.sh stage2'
 ```
 
 `plan` 用**实时** `/proc/iomem` + 运行时 DT 复核每个地址，`load` 才真正搬运。
-默认布局（参考机实测，可用环境变量覆盖）：
+默认布局（已在 `5.10.240-g9cb2f620a9a8` 真机实测验证通过，可用环境变量覆盖）：
 
 | 用途 | 默认地址 | 依据 |
 | --- | --- | --- |
@@ -137,7 +140,7 @@ adb shell su -c 'cat /sys/fs/pstore/pmsg-ramoops-0'
 | pstore 内容 | 结论 |
 | --- | --- |
 | `quest-handoff: init reached userspace` | 目标内核跑到了用户态 |
-| `quest-handoff: version Linux version 5.10.246-quest3s-va48` | 跑的是我们的内核 |
+| `quest-handoff: version Linux version 5.10.240 ...` | 核对编译时间戳/签名，确认跑的是带扩展功能的目标内核 |
 | 只有原厂内核的旧日志 / 空的 | 切换未生效，回到第一级 |
 
 ---
@@ -277,14 +280,14 @@ scripts/check-module-abi.py --symvers device/Module.symvers \
 - 目标内核重新初始化硬件时，SCM/TEE、Gunyah 看门狗、远程处理器都依赖“先停干净”的前提；
   TEE 句柄所有权转移与 SCM WAITQ 排空**未实现**（见 [TEE_HANDOFF.md](TEE_HANDOFF.md)）。
 - `ramoops` 能跨切换保留的前提是它被钉在设备实际选定的地址上（`--report` 自动完成）。
-- 目标内核的模块必须与目标内核一起构建；原厂 vendor 模块不与 VA48 目标内核通用。
+- 目标内核虽保持 `5.10.240` 版本号，但因开启了 VA48（四级页表）等特性，其内核模块必须与目标内核一起构建，原厂 VA39 vendor 模块不与目标内核通用。
 
 ## 9. 相关文档
 
 - [docs/BRINGUP.md](docs/BRINGUP.md)：上机逐级教程与排障顺序
 - [docs/TARGET.md](docs/TARGET.md)：目标内核的配置派生、构建与产物
 - [DEVICE_LADDER.md](DEVICE_LADDER.md)：验证阶梯（只读 → 可逆 → 计划 → 最小目标）
-- [VALIDATION.md](VALIDATION.md)：主机端验证与其边界
+- [VALIDATION.md](VALIDATION.md)：真机热切换验证、主机端验证与其边界
 - [TEE_HANDOFF.md](TEE_HANDOFF.md)：TEE 现状与未实现部分
 - [PROVENANCE.md](PROVENANCE.md)：来源与移植边界
 
