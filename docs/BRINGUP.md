@@ -1,7 +1,9 @@
-# 上机步骤（Quest 3S 首次热切换）
+# 上机步骤（Quest 3S 热切换实操指南）
 
 设备 BL 锁死，只能靠 kexec 在内存里换内核；工具不写任何分区，卡死后断电重启即回来。
 本文件按“一次上机尽量成功”排列：前三级全部可逆，第四级才真正换内核。
+
+> **实机验证状态**：以下完整流程及默认物理地址已在 Quest 3S 原厂 `5.10.240-g9cb2f620a9a8` 内核上验证切换成功（目标内核同为 `5.10.240`，已合入 VA48 / NTSync / BakaSU / Droidspaces 扩展功能）。
 
 ## 0. 需要准备的文件
 
@@ -11,7 +13,7 @@ CI 产出（GitHub Actions artifact）拼成一个包：
 | --- | --- | --- |
 | `quest_el1_kexec.ko` | loader 仓库 `Device-ABI module build` | 按设备 `config`/`symvers`/clang r450784e 编译，vermagic `5.10.240-g9cb2f620a9a8` |
 | `quest-el1` | `Host checks` → `quest-el1-aarch64` | 静态 aarch64 规划器 |
-| `Image.el1` | fork 仓库 `Handoff target build` | 目标内核（VA48/NTSync/BakaSU/Droidspaces） |
+| `Image.el1` | fork 仓库 `Handoff target build` | 目标内核（`5.10.240`，含 VA48/NTSync/BakaSU/Droidspaces） |
 | `initramfs.cpio.gz` | `Host checks` → `quest-el1-aarch64` | 首启 `/init`，只写 pmsg 后回重启 |
 | `bringup.sh` | 本仓库 `scripts/bringup.sh` | 设备端分阶段脚本 |
 
@@ -57,7 +59,7 @@ adb shell su -c 'sh /data/local/tmp/q3s/bringup.sh stage2'
 ```
 
 `plan` 用**实时** `/proc/iomem` 和运行时 DT 校验所有地址；`load` 再把镜像搬进目标地址并做
-分段 CRC 校验。默认地址（参考机测得，可被环境变量覆盖）：
+分段 CRC 校验。默认地址（已在 `5.10.240-g9cb2f620a9a8` 真机实测验证通过，可被环境变量覆盖）：
 
 | 用途 | 地址 | 说明 |
 | --- | --- | --- |
@@ -97,7 +99,7 @@ adb shell su -c 'cat /sys/fs/pstore/pmsg-ramoops-0'
 ```
 
 - 有 `quest-handoff: init reached userspace` → 目标内核已经跑起来了；
-- 有 `quest-handoff: version Linux version 5.10.246-quest3s-va48 ...` → 是我们的内核；
+- 有 `quest-handoff: version Linux version 5.10.240 ...` → 结合构建主机签名/时间戳确认是合入扩展功能的自编译内核；
 - 完全没有 pstore 内容 → 切换没成功（或没走到 ramoops 初始化），回到第一级重看报告。
 
 ## 6. 调试顺序（按代价从低到高）
