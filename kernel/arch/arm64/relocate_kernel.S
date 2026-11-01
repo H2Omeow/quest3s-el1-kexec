@@ -21,7 +21,7 @@
 .balign 16
 .globl quest_el1_transition
 quest_el1_transition:
-	hint	#34				/* BTI c, harmless on older CPUs */
+	hint	#38				/* BTI j: entered with br x16 */
 	mov	x18, x2
 	mov	x17, x1
 	mov	x16, x0

@@ -61,7 +61,7 @@ SYM_FUNC_END(quest_rehearse_enter)
 .balign 16
 .globl quest_el1_return
 quest_el1_return:
-	hint	#34				/* BTI c: entered with br x17 */
+	hint	#38				/* BTI j: entered with br x17 */
 	dsb	sy
 	msr	sctlr_el1, x22
 	isb
