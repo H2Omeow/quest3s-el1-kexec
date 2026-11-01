@@ -100,15 +100,15 @@ unwind 元数据（`.eh_frame`），不改写 `Image` 或 `vmlinux`。
 
 | 文件 | 大小 | 说明 |
 | --- | --- | --- |
-| Image | 36,438,068 B | 原始 ARM64 Image，SHA256 cb488601d3172028b6e4a5f2de756a0b43ff2dc3aedafa82544a6097e6d8658b |
-| Image.el1 | 34,802,176 B | run 41286406725 产物，SHA256 71de77c7007b29f6964c2f5d0cc0187c7985e085cd0080f3195341fd32260b74 |
+| Image | 36,438,068 B | 原始 ARM64 Image，SHA256 4e6f4a98172c7bf702d507d5f3fdecc0e0cdfa68512f9920ff74b485cacfddcd |
+| Image.el1 | 34,804,224 B | run 41292654740 产物，SHA256 ff317fb1a97fb5b163f014e24fb32d0f423a795a5d7eba1cf543a34d0a4aec28 |
 | `vmlinux` | ~48 MB | 符号来源 |
 | `Module.symvers` | ~1 MB | 目标内核导出符号 |
-| 模块 | 267 个 | 目标内核自带；与设备实际加载的 268 个 vendor 模块不是同一集合 |
+| 模块 | 265 个 | 目标内核自带；与设备实际加载的 268 个 vendor 模块不是同一集合 |
 
 ## 6. 与设备模块的关系
 
-设备加载 267 个 vendor 模块，公开源码可构建的更少。目标内核启动时不应加载原厂 vendor 模块
+设备加载 268 个 vendor 模块，公开源码可构建的更少。目标把 QCOM_RPMH/QCOM_COMMAND_DB 内建，provider 仍为模块。目标内核启动时不应加载原厂 vendor 模块
 （CRC/struct module/页表假设不兼容）。handoff/240-H2O 在 kernel/module.c 绕过了 CRC、vermagic、
 签名和 CFI 检查，并设 CONFIG_CFI_PERMISSIVE=y；这只能避免“加载时被拒绝”，不能修复 ABI。
 首选与目标同一次构建的 modules/，不要用原厂 .ko。首启 initramfs 完全静态，不加载任何模块，

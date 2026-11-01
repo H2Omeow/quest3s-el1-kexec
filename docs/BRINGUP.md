@@ -13,7 +13,7 @@ CI 产出（GitHub Actions artifact）拼成一个包：
 | --- | --- | --- |
 | `quest_el1_kexec.ko` | loader 仓库 `Device-ABI module build` | 按设备 `config`/`symvers`/clang r450784e 编译，vermagic `5.10.240-g9cb2f620a9a8` |
 | `quest-el1` | `Host checks` → `quest-el1-aarch64` | 静态 aarch64 规划器 |
-| `Image.el1` | fork 仓库 `Handoff target build` | 目标内核（`5.10.240`，含 VA48/NTSync/BakaSU/Droidspaces） |
+| `Image.el1` | fork 仓库 `Handoff target build` | 目标内核（`5.10.240-va48-H2O`，含 VA48/NTSync/BakaSU 35259/Droidspaces/RPMh warm-handoff） |
 | `initramfs.cpio.gz` | `Host checks` → `quest-el1-aarch64` | 首启 `/init`，只写 pmsg 后回重启 |
 | `bringup.sh` | 本仓库 `scripts/bringup.sh` | 设备端分阶段脚本 |
 

@@ -42,7 +42,7 @@
 | `quest_el1_kexec.ko` | `Device-ABI module build` → job `loader` | 按设备 ABI 编译，vermagic `5.10.240-g9cb2f620a9a8` |
 | `quest-el1` | `Host checks` → job `cli-arm64` | 静态 aarch64 规划器 |
 | `initramfs.cpio.gz` | `Host checks` → job `cli-arm64` | 首启 `/init`：只写 pmsg，然后回重启 |
-| Image.el1 | fork 仓库 Handoff target build | 目标内核 5.10.240-va48-H2O（含 VA48 / NTSync / BakaSU 35259 / Droidspaces） |
+| Image.el1 | fork 仓库 Handoff target build | 目标内核 5.10.240-va48-H2O（含 VA48 / NTSync / BakaSU 35259 / Droidspaces / RPMh warm-handoff） |
 
 打包成一个目录（顺便生成 `manifest.json` 与 `SHA256SUMS`）：
 
@@ -280,7 +280,7 @@ scripts/check-module-abi.py --symvers device/Module.symvers \
 - 目标内核重新初始化硬件时，SCM/TEE、Gunyah 看门狗、远程处理器都依赖“先停干净”的前提；
   TEE 句柄所有权转移与 SCM WAITQ 排空**未实现**（见 [TEE_HANDOFF.md](TEE_HANDOFF.md)）。
 - `ramoops` 能跨切换保留的前提是它被钉在设备实际选定的地址上（`--report` 自动完成）。
-- 目标内核是 5.10.240-va48-H2O（设备 5.10.240 配置 + VA48/NTSync/BakaSU/Droidspaces fragment），不是 stock 5.10.240；其内核模块必须与目标内核一起构建，原厂 VA39 vendor 模块不与目标内核通用。
+- 目标内核是 5.10.240-va48-H2O（设备 5.10.240 配置 + VA48/NTSync/BakaSU/Droidspaces fragment），不是 stock 5.10.240；其内核模块必须与目标内核一起构建，原厂 VA39 vendor 模块不与目标内核通用。目标把 QCOM_RPMH/QCOM_COMMAND_DB 内建以清理 warm kexec 遗留的 RSC 状态，provider 仍为模块；细节见内核分支 tools/quest3s/RPMH_WARM_HANDOFF.md。
 
 ## 9. 相关文档
 
