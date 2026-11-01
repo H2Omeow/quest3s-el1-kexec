@@ -71,6 +71,18 @@ static void quest_flush_image_list(struct kimage *image)
 	}
 }
 
+static void quest_flush_segments(const struct kimage *image)
+{
+	unsigned int i;
+
+	for (i = 0; i < image->nr_segments; i++) {
+		if (!image->segment[i].memsz)
+			continue;
+		quest_flush_dcache(phys_to_virt(image->segment[i].mem),
+				   image->segment[i].memsz);
+	}
+}
+
 void machine_kexec(struct kimage *image)
 {
 	phys_addr_t code = page_to_phys(image->control_code_page);
@@ -83,6 +95,13 @@ void machine_kexec(struct kimage *image)
 	memcpy(buffer, quest_el1_transition, size);
 	quest_flush_dcache(buffer, size);
 	quest_flush_image_list(image);
+	/*
+	 * DTB and initrd are loaded by kimage_load_segment and are never
+	 * copied by the relocation stub, whose dc ivac only covers image
+	 * destination pages. Clean every destination segment to PoC or the
+	 * target may read stale lines with the MMU and caches off.
+	 */
+	quest_flush_segments(image);
 	pr_emerg("EL1 handoff: Image=%pa DTB=%#lx transition=%pa\n",
 		 &image->start, image->dtb, &code);
 
