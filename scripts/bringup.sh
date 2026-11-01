@@ -18,6 +18,8 @@
 # Environment overrides (addresses default to the layout measured on the
 # reference unit; stage2 re-validates all of them against live data):
 #   KERNEL_BASE  INITRD_ADDR  DTB_ADDR  IMAGE  INITRD  DTB
+#   ALLOW_TEE (default 1)  REMOTE_PROCS (default pas, "none" to skip)
+#   DISABLE_QSEECOM (default 1; set 0 to keep qseecom for a stock Android ramdisk)
 
 set -u
 
@@ -33,6 +35,17 @@ KERNEL_BASE=${KERNEL_BASE:-0xa8000000}
 INITRD_ADDR=${INITRD_ADDR:-0xaca00000}
 DTB_ADDR=${DTB_ADDR:-0xacc00000}
 DEV=${DEV:-/dev/quest_el1}
+ALLOW_TEE=${ALLOW_TEE:-1}
+REMOTE_PROCS=${REMOTE_PROCS:-pas}
+DISABLE_QSEECOM=${DISABLE_QSEECOM:-1}
+
+# Module parameters, resolved once so stage1 and any reload agree.
+module_args() {
+    set -- ""
+    [ "$ALLOW_TEE" = 1 ] && set -- "$@" allow_tee=1
+    [ "$REMOTE_PROCS" = none ] || set -- "$@" "stop_remoteprocs=$REMOTE_PROCS"
+    printf '%s\n' "$*"
+}
 
 say() {
     printf '%s\n' "$*" | tee -a "$LOG"
@@ -50,13 +63,14 @@ run() {
 
 # One option list shared by plan, load and rehearse: they must agree exactly.
 plan_args() {
-    printf '%s ' \
+    set -- \
         --image "$IMAGE" --dtb "$DTB" --initrd "$INITRD" \
         --report "$REPORT" --iomem /proc/iomem \
         --kernel-base "$KERNEL_BASE" \
         --initrd-addr "$INITRD_ADDR" \
-        --dtb-addr "$DTB_ADDR" \
-        --disable /soc/qseecom@c1700000
+        --dtb-addr "$DTB_ADDR"
+    [ "$DISABLE_QSEECOM" = 1 ] && set -- "$@" --disable /soc/qseecom@c1700000
+    printf '%s ' "$@"
 }
 
 stage1() {
@@ -67,7 +81,12 @@ stage1() {
     if [ -e "$DEV" ]; then
         say "module already loaded"
     else
-        run insmod "$MODULE"
+        # allow_tee=1 stops the loader from refusing when qseecom/smcinvoke are
+        # bound (the target DTB disables the node instead).  stop_remoteprocs=pas
+        # shuts ADSP/CDSP down before the jump: qcom_q6v5_pas has no .shutdown,
+        # so otherwise their DMA keeps writing into the RAM we hand over.
+        # shellcheck disable=SC2046
+        run insmod "$MODULE" $(module_args)
         run sh -c "cat $DEV > $REPORT"
     fi
     [ -s "$REPORT" ] || die "empty report"

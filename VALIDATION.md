@@ -2,14 +2,17 @@
 
 本记录汇总仓库的**Quest 3S 真机热切换验证**与**主机侧自动化验证**。
 
-## 真机热切换验证（Quest 3S `5.10.240-g9cb2f620a9a8`）
+## 真机热切换验证（Quest 3S 5.10.240-g9cb2f620a9a8）
 
-已在零售版 Quest 3S（运行原厂内核 `5.10.240-g9cb2f620a9a8`）上完成从模块加载到目标内核启动的端到端热切换验证：
+**当前状态：Stage 4 尚未成功。** 仓库旧版本声称的 Stage 1–4 端到端成功没有可复核的 pstore/console 原始日志，且与内核分支 QUEST3S_VA48.md 的 No headset boot or handoff has been performed 矛盾，不能作为验证结论。
 
-1. **Stage 1（只读采集与 ABI 校验）**：使用 `Device-ABI module build` 产出的 `quest_el1_kexec.ko` 在真机 `insmod` 成功，kprobe 符号绑定、`/dev/quest_el1` 状态报告导出及 `/proc/device-tree` 运行时 DTB（`runtime.dtb`）生成均符合预期（`current_el 1`、`arch_check 0`）。
-2. **Stage 2（实机地址规划与装载）**：基于设备实时 `/proc/iomem`、运行时 DTB 与模块报告固定动态保留区（含 `ramoops`）及 hypervisor 安全内存 `no-map` 区间，在默认物理地址布局（内核 `0xa8000000`、initrd `0xaca00000`、DTB `0xacc00000`）下通过冲突检查、完成分段装载与 CRC 校验。
-3. **Stage 3（可逆重定位演练）**：`quest-el1 rehearse --steps copy`（以及看门狗/从核演练）通过，在 MMU 关闭状态下经由真实 relocate blob 完成物理页复制校验并安全返回原厂内核。
-4. **Stage 4（EL1 热切换执行）**：携带 `allow_tee=1` 并在目标 DTB 禁用 `/soc/qseecom@c1700000` 后执行 `quest-el1 exec --yes`，成功冻结进程、停用看门狗、下线从核并跳转至目标 `5.10.240` 内核（已合入 VA48 / NTSync / BakaSU / Droidspaces 扩展特性）。重启后通过 `/sys/fs/pstore/`（`console-ramoops-0` / `pmsg-ramoops-0`）确认目标内核完成引导并执行首启用户态 `/init`（输出 `quest-handoff: init reached userspace` 与目标内核版本字符串）。
+已由代码、CI 或可复现实验证明的部分：
+
+1. **Stage 1（只读采集与 ABI 校验）**：Device-ABI module build 产出的 quest_el1_kexec.ko 已在真机 insmod 成功，kprobe 符号绑定、/dev/quest_el1 状态报告及 /proc/device-tree 运行时 DTB 生成可用（current_el 1、arch_check 0）。
+2. **Stage 2（地址规划与装载）**：默认布局（内核 0xa8000000、initrd 0xaca00000、DTB 0xacc00000）下的冲突检查、分段装载与 CRC 校验可完成；plan 仍依赖设备实时 /proc/iomem 与 runtime.dtb。
+3. **Stage 3/4 首跳根因（2026-11-01）**：stock 与目标都启用 CONFIG_ARM64_BTI_KERNEL=y，SCTLR_EL1.BT0=1。quest_enter_stub 用 br 跳入 quest_el1_transition，而后者以 hint #34（BTI c）开头；跳转目标必须是 BTI j/jc，所以第一条指令即触发 BTI 异常，目标内核没有执行机会，表现为无日志、无 panic 的外部复位。rehearse 的 quest_el1_return 有同样缺陷。
+4. **修复**：commit 823f76c6d7c6b6dce86bb46561edebc93fd64beb（arm64: use jump-type BTI landing pads for kexec stubs）把两个入口改为 hint #38（实际是 BTI jc）。对应 Device-ABI 构建 run 41282297624 的 quest_el1_kexec.ko 为 306,752 字节，SHA256 06ad4f3253e1a1eab2a52876ddacfd25ee53cf667d6424bf47e0619148698a08；反汇编确认入口字节由 5f 24 03 d5 变为 df 24 03 d5。
+5. **尚未完成**：用修复后的 .ko 在真机重跑 Stage 4，并从 /sys/fs/pstore/ 取 console-ramoops-0 与 pmsg-ramoops-0；Android 用户态、TEE 句柄、vendor 模块 ABI 均未验证。
 
 ---
 
@@ -64,7 +67,7 @@ python3 tests/test_handoff.py
 
 模块报告列出 stock `reserved_mem` 表中全部已解析的保留区（`rmem` 行）。CLI 通过 `--report` 把目标 DTB 中只有 `size` 的节点固定为对应 `reg`；没有报告时这些节点仍会拒绝规划，额外指定 `--reserve` 也不会跳过这一限制。
 
-`allow_tee=1` 把 TEE 驱动已绑定从拒绝改为告警，不实现句柄交接；配合目标 DTB `--disable /soc/qseecom@c1700000` 使用，已在真机首启切换中验证可行。
+allow_tee=1 只把 TEE 驱动已绑定从拒绝改为告警，不实现句柄交接；此前“已在真机首启切换中验证可行”的说法随旧的成功声明一并撤回，修复后需重新验证。
 
 ---
 
@@ -72,4 +75,4 @@ python3 tests/test_handoff.py
 
 仓库跟踪了可复现的合成 DTS、运行脚本和输入说明，位于 [tests/fixtures/synthetic-plan](tests/fixtures/synthetic-plan/README.md)。合成测试中的所有 RAM、DTB 和保留区地址仅用于 CI 回归验证规划器对内核冲突、reserved-memory 冲突和 DTB 映射块冲突的拦截逻辑；真机装机使用的是设备端 `bringup.sh` 采集的实时 `/proc/iomem` 与 `runtime.dtb`。
 
-目标 `5.10.240` 内核（保持 `5.10.240` 版本号，启用 VA48 / NTSync / BakaSU / Droidspaces）与 257 个模块已完成构建并在 Quest 3S 真机完成热切换引导验证。由最终 ELF 导出的 `Image.el1` 为 34,208,256 字节，SHA256 `f7aa14c33cf72312789ac12f2be3063b409f929321576a92ab209f0b9bbf7454`；运行区间为 35,848,192 字节。导出脚本验证了 25 个 alloc sections，并仅排除 `_end` 后 206,348 字节的顶层 `.eh_frame`。完整配置、内核和模块指纹见[目标构建报告](https://github.com/H2Omeow/oculus-linux-kernel/blob/va48-quest3s/tools/quest3s/BUILD_ARTIFACTS.md)。
+目标构建已迁移到 handoff/240-H2O：直接基于 5.10.240 vendor commit 729ec6c4b208，设备 5.10.240 配置 + fragment，版本 5.10.240-va48-H2O，BakaSU 35259，并加入 Droidspaces 所需的内核前置项。run 41286406725（commit 33dc76559f24）成功：Image 36,438,068 B SHA256 cb488601d3172028b6e4a5f2de756a0b43ff2dc3aedafa82544a6097e6d8658b，Image.el1 34,802,176 B SHA256 71de77c7007b29f6964c2f5d0cc0187c7985e085cd0080f3195341fd32260b74，267 个模块；artifact id 13075128174。旧 5.10.246 / 34,208,256 字节的 Image.el1 不再使用。

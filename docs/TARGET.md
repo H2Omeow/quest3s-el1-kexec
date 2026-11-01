@@ -1,10 +1,10 @@
 # 目标内核：构建、特性与产物
 
 目标内核在另一个仓库：[H2Omeow/oculus-linux-kernel](https://github.com/H2Omeow/oculus-linux-kernel)，
-分支 `va48-quest3s`（CI 用 `handoff/ci`）。它和本仓库的加载器**独立构建**：
+分支 va48-quest3s（target 构建用 handoff/240-H2O）。它和本仓库的加载器独立构建：
 
 - 加载器模块必须按**设备当前运行的原厂 5.10.240 内核**的 ABI 编译；
-- 目标内核是 5.10.246 派生，自带自己的模块集合；
+- 目标内核是 5.10.240-va48-H2O（设备 5.10.240 配置 + VA48/NTSync/BakaSU/Droidspaces fragment），自带自己的模块集合；
 - 两者的 `.ko` 不能混用。
 
 ---
@@ -45,7 +45,7 @@ merge_config.sh -m  ←  tools/quest3s/handoff-target.fragment
 | 已 root | `KSU=y`、`KSU_TRACEPOINT_HOOK=y`、`KSU_MULTI_MANAGER_SUPPORT=y` |
 | 容器 | `SYSVIPC`、`POSIX_MQUEUE`、`FHANDLE`、`CHECKPOINT_RESTORE`、全部 namespace、`CGROUP_DEVICE/PIDS`、`DEVTMPFS`、`OVERLAY_FS`、`TUN`、`VETH`、`BRIDGE`、xt `ADDRTYPE/RECENT/LOG`、`NF_LOG_IPV4/6` |
 | 首启 | `QUEST_HANDOFF=y`（见下） |
-| 版本串 | `LOCALVERSION="-quest3s-va48"` |
+| 版本串 | LOCALVERSION="-va48-H2O"；BakaSU 35259 |
 | 体积 | `LTO_CLANG_THIN`（关 FULL）、关 `DEBUG_INFO`/`BTF`/`PGO` |
 
 ## 3. 首启辅助驱动 `quest_handoff`
@@ -100,22 +100,24 @@ unwind 元数据（`.eh_frame`），不改写 `Image` 或 `vmlinux`。
 
 | 文件 | 大小 | 说明 |
 | --- | --- | --- |
-| `Image` | ~36 MB | 原始 ARM64 Image |
-| `Image.el1` | ~34 MB | 给加载器用，头部的 `image_size` 与实际内容一致 |
+| Image | 36,438,068 B | 原始 ARM64 Image，SHA256 cb488601d3172028b6e4a5f2de756a0b43ff2dc3aedafa82544a6097e6d8658b |
+| Image.el1 | 34,802,176 B | run 41286406725 产物，SHA256 71de77c7007b29f6964c2f5d0cc0187c7985e085cd0080f3195341fd32260b74 |
 | `vmlinux` | ~48 MB | 符号来源 |
 | `Module.symvers` | ~1 MB | 目标内核导出符号 |
-| 模块 | 257 个 | 目标内核自带 |
+| 模块 | 267 个 | 目标内核自带；与设备实际加载的 268 个 vendor 模块不是同一集合 |
 
 ## 6. 与设备模块的关系
 
-设备加载 267 个 vendor 模块，公开源码可构建的更少。目标内核启动时**不应该**加载原厂
-vendor 模块（CRC/结构不兼容）。首启用的 initramfs 是完全静态的，不加载任何模块，这正是
-`handoff-init` 存在的意义：先证明内核能跑到用户态，再谈 Android。
+设备加载 267 个 vendor 模块，公开源码可构建的更少。目标内核启动时不应加载原厂 vendor 模块
+（CRC/struct module/页表假设不兼容）。handoff/240-H2O 在 kernel/module.c 绕过了 CRC、vermagic、
+签名和 CFI 检查，并设 CONFIG_CFI_PERMISSIVE=y；这只能避免“加载时被拒绝”，不能修复 ABI。
+首选与目标同一次构建的 modules/，不要用原厂 .ko。首启 initramfs 完全静态，不加载任何模块，
+用于先证明内核能跑到用户态。
 
 ## 7. 检查清单（上机前）
 
-- [ ] `kernel.release` 是 `5.10.246-quest3s-va48`
-- [ ] `Image.el1` 头里 `image_size` ≥ 文件大小、`text_offset = 0x80000`、flags 为 LE + 4K
+- [ ] kernel.release 是 5.10.240-va48-H2O
+- [ ] Image.el1 头里 image_size ≥ 文件大小、text_offset = 0、flags 为 LE + 4K（5.10 arm64 的 Image 头 load offset 是 0，不是 0x80000）
 - [ ] `grep -c '^CONFIG_NTSYNC=y' out/.config` = 1
 - [ ] `grep -c '^CONFIG_KSU=y' out/.config` = 1
 - [ ] `grep -c '^CONFIG_PGTABLE_LEVELS=4' out/.config` = 1

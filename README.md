@@ -4,11 +4,11 @@
 不需要 `CONFIG_KEXEC`、不需要解锁 BL。仓库包含两部分：内核模块（自带 kexec 装载核心与
 可逆自检）和静态 aarch64 用户态规划器 `quest-el1`。
 
-> **状态**：**已在 Quest 3S（原厂 `5.10.240-g9cb2f620a9a8`）真机上验证热切换成功。**
-> 模块针对本机真实 ABI 构建（设备 `config` + 从 `boot_a.img` 恢复的 `Module.symvers` +
-> 设备同代 clang r450784e），modpost 与 CRC 校验全部通过；实机已完成 Stage 1–4 全流程，
-> 成功从原厂内核热切换到同为 `5.10.240` 版本号的自编译目标内核（已合入 VA48 / NTSync /
-> BakaSU / Droidspaces 扩展功能），并进入用户态 `/init` 落盘 `pstore` 日志。
+> **状态**：**Stage 1–2（只读/规划装载）已执行；Stage 3/4 共用 BTI 入口，此前在 hint #34 处失败，已在 823f76c6 修复。**
+> stock 与目标都启用 CONFIG_ARM64_BTI_KERNEL=y。quest_el1_transition 以 hint #34（BTI c）开头，
+> 而 quest_enter_stub 用 br 跳入；SCTLR_EL1.BT0=1 时跳转目标必须是 BTI j/jc，第一条指令即触发
+> BTI 异常，目标内核完全没有执行机会，所以表现为无日志、无 panic 的外部复位。现已改为 hint #38
+>（实际编码是 BTI jc，br 与 blr 都接受）。修复后尚未取得真机 pstore 证据；Android 用户态与 TEE 仍需实测。
 > BL 锁死时 kexec 是运行自定义内核的唯一途径，卡死可断电恢复。
 
 ---
@@ -42,7 +42,7 @@
 | `quest_el1_kexec.ko` | `Device-ABI module build` → job `loader` | 按设备 ABI 编译，vermagic `5.10.240-g9cb2f620a9a8` |
 | `quest-el1` | `Host checks` → job `cli-arm64` | 静态 aarch64 规划器 |
 | `initramfs.cpio.gz` | `Host checks` → job `cli-arm64` | 首启 `/init`：只写 pmsg，然后回重启 |
-| `Image.el1` | fork 仓库 `Handoff target build` | 目标内核（`5.10.240`，含 VA48 / NTSync / BakaSU / Droidspaces） |
+| Image.el1 | fork 仓库 Handoff target build | 目标内核 5.10.240-va48-H2O（含 VA48 / NTSync / BakaSU 35259 / Droidspaces） |
 
 打包成一个目录（顺便生成 `manifest.json` 与 `SHA256SUMS`）：
 
@@ -280,7 +280,7 @@ scripts/check-module-abi.py --symvers device/Module.symvers \
 - 目标内核重新初始化硬件时，SCM/TEE、Gunyah 看门狗、远程处理器都依赖“先停干净”的前提；
   TEE 句柄所有权转移与 SCM WAITQ 排空**未实现**（见 [TEE_HANDOFF.md](TEE_HANDOFF.md)）。
 - `ramoops` 能跨切换保留的前提是它被钉在设备实际选定的地址上（`--report` 自动完成）。
-- 目标内核虽保持 `5.10.240` 版本号，但因开启了 VA48（四级页表）等特性，其内核模块必须与目标内核一起构建，原厂 VA39 vendor 模块不与目标内核通用。
+- 目标内核是 5.10.240-va48-H2O（设备 5.10.240 配置 + VA48/NTSync/BakaSU/Droidspaces fragment），不是 stock 5.10.240；其内核模块必须与目标内核一起构建，原厂 VA39 vendor 模块不与目标内核通用。
 
 ## 9. 相关文档
 
