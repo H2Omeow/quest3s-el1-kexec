@@ -291,6 +291,13 @@ scripts/check-module-abi.py --symvers device/Module.symvers \
 - [TEE_HANDOFF.md](TEE_HANDOFF.md)：TEE 现状与未实现部分
 - [PROVENANCE.md](PROVENANCE.md)：来源与移植边界
 
-## 10. 许可
+## 10. 贡献者
+
+- [H2Omeow](https://github.com/H2Omeow) — 项目维护
+- [XiaoMeow-1145](https://github.com/XiaoMeow-1145) — 贡献者
+
+完整名单见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
+
+## 11. 许可
 
 GPLv2，见 `COPYING.txt`。
