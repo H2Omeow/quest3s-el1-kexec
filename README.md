@@ -91,7 +91,7 @@ adb shell su -c 'sh /data/local/tmp/q3s/bringup.sh stage2'
 ```
 
 `plan` 用**实时** `/proc/iomem` + 运行时 DT 复核每个地址，`load` 才真正搬运。
-默认布局（已在 `5.10.240-g9cb2f620a9a8` 真机实测验证通过，可用环境变量覆盖）：
+默认布局（地址来自 `5.10.240-g9cb2f620a9a8` 真机启动链，plan/load 已验证；只适用于小 handoff initramfs。大 initrd 会与 DTB 重叠，必须用环境变量改 INITRD_ADDR）：
 
 | 用途 | 默认地址 | 依据 |
 | --- | --- | --- |

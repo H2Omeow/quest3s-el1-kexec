@@ -103,7 +103,7 @@ quest-el1 exec --yes
 
 结果判定与诊断：
 
-- **切换成功（已在原厂 `5.10.240` → 扩展版 `5.10.240` 实机验证）**：首启 `/init` 向 pmsg 写入 `quest-handoff: init reached userspace` 及内核版本信息后主动触发重启，原厂系统重启后可在 `/sys/fs/pstore/pmsg-ramoops-0` 与 `console-ramoops-0` 读取完整日志。
+- **切换成功的判定标准（修复后尚未真机复现）**：首启 `/init` 应向 pmsg 写入 `quest-handoff: init reached userspace` 及内核版本信息后主动触发重启；原厂系统重启后可在 `/sys/fs/pstore/pmsg-ramoops-0` 与 `console-ramoops-0` 读取完整日志。取得该日志前不得宣称 Stage 4 成功。
 - **立即重启且无目标 pstore**：查看下一次启动的 PMIC 上电原因与 pstore。
 - **黑屏无重启**：说明 watchdog 已被停用而目标未走到 reboot；检查目标内核早期 console/ramoops 初始化。
 
